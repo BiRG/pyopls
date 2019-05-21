@@ -1,3 +1,7 @@
+# Copyright (c) 2019 Wright State University
+# Author: Daniel Foose <foose.3@wright.edu>
+# License: MIT
+
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin
 from sklearn.utils import check_array
@@ -5,23 +9,59 @@ from sklearn.utils.validation import check_is_fitted, FLOAT_DTYPES
 
 
 class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
+    """
+    Orthogonal Projection to Latent Structures (OPLS)
+
+    This class implements the OPLS algorithm for one (and only one) response as described by [Trygg 2002]
+
+    Parameters
+    ----------
+    n_components: int, number of components to keep. (default 2).
+
+    scale: boolean, scale data? (default True)
+
+    Attributes
+    ----------
+    x_weights_ : array, [n_features, n_components]
+        X block weights vector
+
+    y_weights_ : float
+        Y block weight (is a scalar because singular Y is required)
+
+    x_loadings_ : array, [n_features, n_components]
+        X block loadings vectors
+
+    x_scores_ : array, [n_samples, n_components]
+        X scores
+
+    y_scores_ : array, [n_samples, 1]
+        Y scores
+
+    coef_ : array, [n_features, 1]
+        The coefficients of the linear model
+
+    References
+    ----------
+    Johan Trygg and Svante Wold. Orthogonal projections to latent structures (O-PLS).
+    J. Chemometrics 2002; 16: 119-128. DOI: 10.1002/cem.695
+    """
     def __init__(self, n_components=2, scale=True):
-        self.b = None
-        self.b_l = None
+        """
+        :param n_components: number of components to keep
+        :param scale: scale data?
+        """
+        self.b_ = None
         self.y_weights_ = None  # c
         self.x_loadings_ = None  # p
         self.x_weights_ = None  # w
         self.x_scores_ = None  # t
         self.y_scores_ = None  # u
-        self.orthogonal_x_scores_ = None  # t_ortho
-        self.orthogonal_x_loadings_ = None  # p_ortho
-        self.orthogonal_x_weights_ = None  # w_ortho
+        self.x_scores_ = None  # t_ortho
+        self.x_loadings_ = None  # p_ortho
+        self.x_weights_ = None  # w_ortho
         self.coef_ = None  # B_pls
         self.n_components = n_components
         self.scale_ = scale
-        self.Y_pred_ = None
-        self.R2_X_ = None
-        self.R2_Y_ = None
         self.x_mean_ = None
         self.y_mean_ = None
         self.x_std_ = None
@@ -58,11 +98,17 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
         w_ortho = np.zeros((np.asarray(X).shape[1], self.n_components))
         p_ortho = np.zeros((np.asarray(X).shape[1], self.n_components))
         t_ortho = np.zeros((len(X), self.n_components))
+        X = check_array(X)
+        Y = check_array(Y)
 
-        X_res, Y_res, self.x_mean_, self.y_mean_, self.x_std_, self.y_std_ = self._center_scale_xy(X, Y, self.scale)
+        if Y.shape != (X.shape[0], 1):
+            raise ValueError('This OPLS implementation does not support multiple Y. '
+                             'Y must be a (n_samples, 1) array-like.')
+
+        X_res, Y_res, self.x_mean_, self.y_mean_, self.x_std_, self.y_std_ = self._center_scale_xy(X, Y, self.scale_)
 
         X_res = np.array(X - np.mean(X, 0))  # mean-center X
-        Y_res = np.array(Y - np.mean(Y, 0)).reshape((len(X), -1))  # mean-center Y
+        Y_res = np.array(Y - np.mean(Y, 0))  # mean-center Y
         SS_Y = np.sum(np.square(Y_res))
         SS_X = np.sum(np.square(X_res))
 
@@ -92,16 +138,13 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
         # b coef
         b_l = ((1.0 / (t.T @ t)) * (u.T @ t)).item()
 
-        self.b = b_l
-        self.b_l = b_l
+        self.b_ = b_l  # not sure what "b" is really...
+        # self.y_loadings_= ??
         self.y_weights_ = c
-        self.x_loadings_ = p
-        self.x_weights_ = w
-        self.x_scores_ = t
         self.y_scores_ = u
-        self.orthogonal_x_scores_ = t_ortho
-        self.orthogonal_x_loadings_ = p_ortho
-        self.orthogonal_x_weights_ = w_ortho
+        self.x_scores_ = t_ortho
+        self.x_loadings_ = p_ortho
+        self.x_weights_ = w_ortho
         self.sum_sq_X_ = SS_X
         self.sum_sq_Y_ = SS_Y
 
@@ -110,22 +153,10 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
         B_pls = (W_star * b_l * c)
         self.coef_ = B_pls.reshape((B_pls.size, 1))
 
-        m = np.mean(X, axis=0)
-        X_res = np.asarray(X) - m[np.newaxis, :]
-        z = X_res
-
-        # filter out OPLS components
-        for f in range(0, self.n_components):
-            z = (z - (z @ w_ortho[:, f][:, np.newaxis] / (w_ortho[:, f].T @ w_ortho[:, f])) @ p_ortho[:, f][np.newaxis, :])
-
-        # predict
-        #  self.Y_pred = (z @ self.B_pls) + np.mean(Y, axis=0)
-        # self.R2_X = float((t.T @ t) * (p.T @ p) / SS_X)
-        # Use score() inherited from sklearn base
-        # self.R2_Y = float((t.T @ t) * (b_l ** 2) * (c ** 2) / SS_Y)
+        return self
 
     def fit_transform(self, X, y=None, **fit_params):
-        self.fit(X, y).transform(X, y)
+        return self.fit(X, y).transform(X, y)
 
     def get_params(self, deep=True):
         return {'n_components': self.n_components, 'scale': self.scale_}
@@ -141,8 +172,8 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
 
         # filter out orthogonal components of X
         for f in range(0, self.n_components):
-            z = (z - (z @ self.orthogonal_x_weights_[:, f][:, np.newaxis] / (self.orthogonal_x_weights_[:, f].T @ self.orthogonal_x_weights_[:, f])) @ self.orthogonal_x_loadings_[:, f][np.newaxis, :])
-        return (z @ self.B_pls) + self.y_mean_
+            z = (z - (z @ self.x_weights_[:, f][:, np.newaxis] / (self.x_weights_[:, f].T @ self.x_weights_[:, f])) @ self.x_loadings_[:, f][np.newaxis, :])
+        return np.dot(z, self.coef_) + self.y_mean_
 
     def transform(self, X, Y=None):
         """
@@ -154,13 +185,12 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
         """
         check_is_fitted(self, 'x_mean_')
         X = check_array(X, dtype=FLOAT_DTYPES)
-        Xr = (X - self.x_mean_) / self.x_std_
-        x_scores = Xr @ self.orthogonal_x_weights_
+        x_scores = np.dot((X - self.x_mean_) / self.x_std_, self.x_weights_)
         if Y is not None:
+            Y = check_array(Y)
             if Y.ndim == 1:
                 Y = Y.reshape(-1, 1)
-            Yr = (Y - self.y_mean_) / self.y_std_
-            y_scores = Yr @ self.y_weights_
+            y_scores = np.dot((Y - self.y_mean_) / self.y_std_, self.y_weights_)
             return x_scores, y_scores
         return x_scores
 
