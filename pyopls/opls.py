@@ -10,9 +10,9 @@ from sklearn.utils.validation import check_is_fitted, FLOAT_DTYPES
 
 class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
     """
-    Orthogonal Projection to Latent Structures (OPLS)
+    Orthogonal Projection to Latent Structures (O-PLS)
 
-    This class implements the OPLS algorithm for one (and only one) response as described by [Trygg 2002]
+    This class implements the O-PLS algorithm for one (and only one) response as described by [Trygg 2002]
 
     Parameters
     ----------
@@ -40,6 +40,14 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
     coef_ : array, [n_features, 1]
         The coefficients of the linear model
 
+    R_squared_X_ : float
+        R^2 value for X. The amount of X variation in the X data explained by the model. This variation is independent
+        of the classes and likely to be noise. This should be smaller in an O-PLS model than in a typical PLS model.
+
+    R_squared_Y_ : float
+        R^2 value for Y. The amount of Y variation in the X data explained by the model. This is the value most commonly
+        called R-squared. To get the R^2Y value for another X-Y pair, use score().
+    
     References
     ----------
     Johan Trygg and Svante Wold. Orthogonal projections to latent structures (O-PLS).
@@ -68,6 +76,8 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
         self.y_std_ = None
         self.sum_sq_X_ = None
         self.sum_sq_Y_ = None
+        self.R_squared_X_ = None
+        self.R_squared_Y_ = None
 
     @staticmethod
     def _center_scale_xy(X, Y, scale=True):
@@ -124,7 +134,6 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
             w_ortho[:, i] = w_ortho[:, i] / np.linalg.norm(w_ortho[:, i])
             t_ortho[:, i] = (X_res @ w_ortho[:, i]) / (w_ortho[:, i].T @ w_ortho[:, i])
             p_ortho[:, i] = np.ravel((t_ortho[:, i].T @ X_res) / (t_ortho[:, i].T @ t_ortho[:, i]))
-            # X_res = X_res - np.asmatrix(t_ortho[:, i]).T @ np.asmatrix(p_ortho[:, i])
             X_res = X_res - t_ortho[:, i][:, np.newaxis] @ p_ortho[:, i][np.newaxis, :]
 
         # PLS on full data
@@ -135,7 +144,7 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
         c = (((t.T @ Y_res) / (t.T @ t)).T).item()  # this only works with single-column y
         u = (Y_res * c) / (c ** 2)
         p = ((t.T @ X_res) / (t.T @ t)).T
-        # b coef
+        # b coef, whatever that is (it's part of the calculation of the coefs, possibly a y-loading?)
         b_l = ((1.0 / (t.T @ t)) * (u.T @ t)).item()
 
         self.b_ = b_l  # not sure what "b" is really...
@@ -153,6 +162,8 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
         B_pls = (W_star * b_l * c)
         self.coef_ = B_pls.reshape((B_pls.size, 1))
 
+        self.R_squared_X_ = (t.T @ t) * (p.T @ p) / SS_X
+        self.R_squared_Y_ = (t.T @ t) * (b_l ** 2.0) * c / SS_Y
         return self
 
     def fit_transform(self, X, y=None, **fit_params):
