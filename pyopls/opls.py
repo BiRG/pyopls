@@ -24,23 +24,32 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
 
     Attributes
     ----------
-    x_weights_ : array, [n_features, n_components]
+    orthogonal_x_weights_ : array, [n_features, n_components]
         X block weights vector
+
+    x_weights_ : array, [n_features, 1]
+        X block weights vector for first component of filtered data
 
     y_weights_ : float
         Y block weight (is a scalar because singular Y is required)
 
-    x_loadings_ : array, [n_features, n_components]
+    orthogonal_x_loadings_ : array, [n_features, n_components]
         X block loadings vectors
 
-    x_scores_ : array, [n_samples, n_components]
-        X scores
+    x_loadings_ : array, [n_features, 1]
+        X block loadings vector for first component of filtered data
+
+    orthogonal_x_scores_ : array, [n_samples, n_components]
+        X scores for orthogonal part of data.
+
+    x_scores_ : array, [n_samples, 1]
+        X scores for the first component of filtered data
 
     y_scores_ : array, [n_samples, 1]
         Y scores
 
     coef_ : array, [n_features, 1]
-        The coefficients of the linear model
+        The coefficients of the linear model created from the filtered data
 
     R_squared_X_ : float
         R^2 value for X. The amount of X variation in the X data explained by the model. This variation is independent
@@ -61,13 +70,13 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         self.copy = copy
         self.b_ = None
         self.y_weights_ = None  # c
+        self.y_scores_ = None  # u
+        self.x_scores_ = None  # t
         self.x_loadings_ = None  # p
         self.x_weights_ = None  # w
-        self.x_scores_ = None  # t
-        self.y_scores_ = None  # u
-        self.x_scores_ = None  # t_ortho
-        self.x_loadings_ = None  # p_ortho
-        self.x_weights_ = None  # w_ortho
+        self.orthogonal_x_scores_ = None  # t_ortho
+        self.orthogonal_x_loadings_ = None  # p_ortho
+        self.orthogonal_x_weights_ = None  # w_ortho
         self.coef_ = None  # B_pls
         self.x_mean_ = None
         self.y_mean_ = None
@@ -125,7 +134,7 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
             raise ValueError('This OPLS implementation does not support multiple Y. '
                              'Y must be a (n_samples, 1) array-like.')
 
-        X_res, Y_res, self.x_mean_, self.y_mean_, self.x_std_, self.y_std_ = self._center_scale_xy(X, Y, self.scale_)
+        X_res, Y_res, self.x_mean_, self.y_mean_, self.x_std_, self.y_std_ = self._center_scale_xy(X, Y, self.scale)
 
         X_res = np.array(X - np.mean(X, 0))  # mean-center X
         Y_res = np.array(Y - np.mean(Y, 0))  # mean-center Y
@@ -147,7 +156,7 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
             X_res = X_res - t_ortho[:, i][:, np.newaxis] @ p_ortho[:, i][np.newaxis, :]
 
         # PLS on full data
-        # find PLS component
+        # find first PLS component
         w = ((Y_res.T @ X_res) / (Y_res.T @ Y_res)).T
         w = w / np.linalg.norm(w)
         t = (X_res @ w) / (w.T @ w)
@@ -161,9 +170,12 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         # self.y_loadings_= ??
         self.y_weights_ = c
         self.y_scores_ = u
-        self.x_scores_ = t_ortho
-        self.x_loadings_ = p_ortho
-        self.x_weights_ = w_ortho
+        self.x_scores_ = t
+        self.x_loadings_ = p
+        self.x_weights_ = w
+        self.orthogonal_x_scores_ = t_ortho
+        self.orthogonal_x_loadings_ = p_ortho
+        self.orthogonal_x_weights_ = w_ortho
         self.sum_sq_X_ = SS_X
         self.sum_sq_Y_ = SS_Y
 
@@ -176,29 +188,48 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         self.R_squared_Y_ = ((t.T @ t) * (b_l ** 2.0) * (c ** 2.0) / SS_Y).item()
         return self
 
+    def get_nonorthogonal(self, X):
+        """Get the non-orthogonal components of X (which are considered in prediction).
+
+        Parameters
+        ----------
+        X : array-like, shape = [n_samples, n_features]
+            Training or test vectors, where n_samples is the number of samples and
+            n_features is the number of predictors (which should be the same predictors the model was trained on).
+
+        Returns
+        -------
+        X_res, X with the orthogonal data filtered out
+        """
+        X = check_array(X)
+        z = X - X.mean(axis=0)
+
+        # filter out orthogonal components of X
+        for f in range(0, self.n_components):
+            z = (z - (z @ self.orthogonal_x_weights_[:, f][:, np.newaxis] /
+                      (self.orthogonal_x_weights_[:, f].T @ self.orthogonal_x_weights_[:, f]))
+                 @ self.orthogonal_x_loadings_[:, f][np.newaxis, :])
+        return z
+
     def predict(self, X):
         """Apply the dimension reduction learned on the training data.
 
         Parameters
         ----------
         X : array-like, shape = [n_samples, n_features]
-            Training vectors, where n_samples is the number of samples and
-            n_features is the number of predictors.
+            Training or test vectors, where n_samples is the number of samples and
+            n_features is the number of predictors (which should be the same predictors the model was trained on).
 
         Notes
         -----
         Unlike in sklearn.cross_decomposition.PLSRegression, the prediction from X cannot modify X
         """
-        m = np.mean(X, axis=0)
-        z = np.asarray(X) - m[np.newaxis, :]
-
-        # filter out orthogonal components of X
-        for f in range(0, self.n_components):
-            z = (z - (z @ self.x_weights_[:, f][:, np.newaxis] / (self.x_weights_[:, f].T @ self.x_weights_[:, f])) @ self.x_loadings_[:, f][np.newaxis, :])
+        check_is_fitted(self, 'x_mean_')
+        z = self.get_nonorthogonal(X)
         return np.dot(z, self.coef_) + self.y_mean_
 
     def transform(self, X, Y=None, copy=False):
-        """Apply the dimension reduction learned on the training data.
+        """Get the PLS scores for the data that was removed
 
         Parameters
         ----------
@@ -213,10 +244,15 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         Returns
         -------
         x_scores if Y is not given, (x_scores, y_scores) otherwise.
+
+        Notes
+        -----
+        This is not a PLS transformation of the original data. To get that information, run a
+        sklearn.cross_decomposition.PLSRegression on the results of get_nonorthogonal.
         """
         check_is_fitted(self, 'x_mean_')
         X = check_array(X, dtype=FLOAT_DTYPES, copy=copy)
-        x_scores = np.dot((X - self.x_mean_) / self.x_std_, self.x_weights_)
+        x_scores = np.dot((X - self.x_mean_) / self.x_std_, self.orthogonal_x_weights_)
         if Y is not None:
             Y = check_array(Y)  # will throw for 1d Y
             y_scores = np.dot((Y - self.y_mean_) / self.y_std_, self.y_weights_)
@@ -224,7 +260,7 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         return x_scores
 
     def fit_transform(self, X, y=None, **fit_params):
-        """ Learn and apply the dimension reduction on the training data.
+        """ Learn and apply the dimension reduction on the training data and get the scores for the data that is removed
 
         Parameters
         ----------
