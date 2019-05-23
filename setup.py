@@ -13,7 +13,7 @@ setuptools.setup(
     long_description_content_type='text/markdown',
     url='https://github.com/BiRG/pyopls',
     packages=setuptools.find_packages(),
-    python_requires='>=3.4',
+    python_requires='>=3.5',
     instal_requires=[
         'numpy>=1.11.0',
         'scipy>=0.18.0',
@@ -22,7 +22,6 @@ setuptools.setup(
     classifiers=[
         'Natural Language :: English',
         'Intended Audience :: Science/Research',
-        'Programming Language :: Python :: 3.4',
         'Programming Language :: Python :: 3.5',
         'Programming Language :: Python :: 3.6',
         'Programming Language :: Python :: 3.7',

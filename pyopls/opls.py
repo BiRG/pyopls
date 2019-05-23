@@ -3,14 +3,13 @@
 # License: MIT
 
 import numpy as np
-from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin
+from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin
 from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted, FLOAT_DTYPES
 
 
-class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
-    """
-    Orthogonal Projection to Latent Structures (O-PLS)
+class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
+    """Orthogonal Projection to Latent Structures (O-PLS)
 
     This class implements the O-PLS algorithm for one (and only one) response as described by [Trygg 2002]
 
@@ -19,6 +18,9 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
     n_components: int, number of components to keep. (default 2).
 
     scale: boolean, scale data? (default True)
+
+    copy: boolean
+        copy X and Y to new matrices? (default True). Note that your inputs arrays will change if this is False.
 
     Attributes
     ----------
@@ -53,11 +55,10 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
     Johan Trygg and Svante Wold. Orthogonal projections to latent structures (O-PLS).
     J. Chemometrics 2002; 16: 119-128. DOI: 10.1002/cem.695
     """
-    def __init__(self, n_components=2, scale=True):
-        """
-        :param n_components: number of components to keep
-        :param scale: scale data?
-        """
+    def __init__(self, n_components=2, scale=True, copy=True):
+        self.n_components = n_components
+        self.scale = scale
+        self.copy = copy
         self.b_ = None
         self.y_weights_ = None  # c
         self.x_loadings_ = None  # p
@@ -68,8 +69,6 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
         self.x_loadings_ = None  # p_ortho
         self.x_weights_ = None  # w_ortho
         self.coef_ = None  # B_pls
-        self.n_components = n_components
-        self.scale_ = scale
         self.x_mean_ = None
         self.y_mean_ = None
         self.x_std_ = None
@@ -81,12 +80,11 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
 
     @staticmethod
     def _center_scale_xy(X, Y, scale=True):
-        """
-        Center X, Y and scale if scale parameter is True
-        :param X:
-        :param Y:
-        :param scale:
-        :return: X, Y, x_mean, y_mean, x_std, y_std
+        """Center X, Y and scale if the scale parameter==True
+
+        Returns
+        -------
+            X, Y, x_mean, y_mean, x_std, y_std
         """
         x_mean = X.mean(axis=0)
         X -= x_mean
@@ -105,11 +103,23 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
         return X, Y, x_mean, y_mean, x_std, y_std
 
     def fit(self, X, Y):
+        """Fit model to data
+
+        Parameters
+        ----------
+        X : array-like, shape = [n_samples, n_features]
+            Training vectors, where n_samples is the number of samples and
+            n_features is the number of predictors.
+
+        Y : array-like, shape = [n_samples, 1]
+            Target vector, where n_samples is the number of samples.
+            This implementation only supports a single response (target) variable.
+        """
         w_ortho = np.zeros((np.asarray(X).shape[1], self.n_components))
         p_ortho = np.zeros((np.asarray(X).shape[1], self.n_components))
         t_ortho = np.zeros((len(X), self.n_components))
-        X = check_array(X)
-        Y = check_array(Y)
+        X = check_array(X, copy=self.copy)
+        Y = check_array(Y, copy=self.copy)
 
         if Y.shape != (X.shape[0], 1):
             raise ValueError('This OPLS implementation does not support multiple Y. '
@@ -162,21 +172,22 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
         B_pls = (W_star * b_l * c)
         self.coef_ = B_pls.reshape((B_pls.size, 1))
 
-        self.R_squared_X_ = (t.T @ t) * (p.T @ p) / SS_X
-        self.R_squared_Y_ = (t.T @ t) * (b_l ** 2.0) * c / SS_Y
+        self.R_squared_X_ = ((t.T @ t) * (p.T @ p) / SS_X).item()
+        self.R_squared_Y_ = ((t.T @ t) * (b_l ** 2.0) * (c ** 2.0) / SS_Y).item()
         return self
 
-    def fit_transform(self, X, y=None, **fit_params):
-        return self.fit(X, y).transform(X, y)
-
-    def get_params(self, deep=True):
-        return {'n_components': self.n_components, 'scale': self.scale_}
-
     def predict(self, X):
-        """
-        Apply the dimension reduction learned on the train data
-        :param X: array-like, shape = [n_samples, n_features]. Training vectors.
-        :return:
+        """Apply the dimension reduction learned on the training data.
+
+        Parameters
+        ----------
+        X : array-like, shape = [n_samples, n_features]
+            Training vectors, where n_samples is the number of samples and
+            n_features is the number of predictors.
+
+        Notes
+        -----
+        Unlike in sklearn.cross_decomposition.PLSRegression, the prediction from X cannot modify X
         """
         m = np.mean(X, axis=0)
         z = np.asarray(X) - m[np.newaxis, :]
@@ -186,22 +197,48 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin, MultiOutputMixin):
             z = (z - (z @ self.x_weights_[:, f][:, np.newaxis] / (self.x_weights_[:, f].T @ self.x_weights_[:, f])) @ self.x_loadings_[:, f][np.newaxis, :])
         return np.dot(z, self.coef_) + self.y_mean_
 
-    def transform(self, X, Y=None):
-        """
-        Apply the dimension reduction learned via fit()
-        :param X: array-like, shape = [n_samples, n_features]
-        :param Y: array-like, shape = [n_samples, 1] (for now)
-        :param copy:
-        :return: (x_scores, y_scores)
+    def transform(self, X, Y=None, copy=False):
+        """Apply the dimension reduction learned on the training data.
+
+        Parameters
+        ----------
+        X : array-like, shape = [n_samples, n_features]
+            Training vectors, where n_samples is the number of samples and
+            n_features is the number of predictors.
+
+        Y : array-like, shape = [n_samples, 1]
+            Target vector, where n_samples is the number of samples.
+            This implementation only supports a single response (target) vector.
+
+        Returns
+        -------
+        x_scores if Y is not given, (x_scores, y_scores) otherwise.
         """
         check_is_fitted(self, 'x_mean_')
-        X = check_array(X, dtype=FLOAT_DTYPES)
+        X = check_array(X, dtype=FLOAT_DTYPES, copy=copy)
         x_scores = np.dot((X - self.x_mean_) / self.x_std_, self.x_weights_)
         if Y is not None:
-            Y = check_array(Y)
-            if Y.ndim == 1:
-                Y = Y.reshape(-1, 1)
+            Y = check_array(Y)  # will throw for 1d Y
             y_scores = np.dot((Y - self.y_mean_) / self.y_std_, self.y_weights_)
             return x_scores, y_scores
         return x_scores
+
+    def fit_transform(self, X, y=None, **fit_params):
+        """ Learn and apply the dimension reduction on the training data.
+
+        Parameters
+        ----------
+        X : array-like, shape=[n_samples, n_features]
+            Training vectors, where n_samples is the number of samples and
+            n_features is the number of predictors.
+
+        y : array-like, shape = [n_samples, 1]
+            Target vector, where n_samples is the number of samples.
+            This O-PLS implementation only supports a single response (target) variable.
+
+        Returns
+        -------
+        x_scores if Y is not given, (x_scores, y_scores) otherwise.
+        """
+        return self.fit(X, y).transform(X, y)
 
