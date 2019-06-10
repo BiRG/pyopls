@@ -11,11 +11,12 @@ from sklearn.utils.validation import check_is_fitted, FLOAT_DTYPES
 class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
     """Orthogonal Projection to Latent Structures (O-PLS)
 
-    This class implements the O-PLS algorithm for one (and only one) response as described by [Trygg 2002]
+    This class implements the O-PLS algorithm for one (and only one) response as described by [Trygg 2002].
+    This is based on the MATLAB implementation by Paul E. Anderson (https://github.com/Anderson-Lab/OPLS).
 
     Parameters
     ----------
-    n_components: int, number of components to keep. (default 2).
+    n_components: int, number of orthogonal components to filter. (default 5).
 
     scale: boolean, scale data? (default True)
 
@@ -64,7 +65,7 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
     Johan Trygg and Svante Wold. Orthogonal projections to latent structures (O-PLS).
     J. Chemometrics 2002; 16: 119-128. DOI: 10.1002/cem.695
     """
-    def __init__(self, n_components=2, scale=True, copy=True):
+    def __init__(self, n_components=5, scale=True, copy=True):
         self.n_components = n_components
         self.scale = scale
         self.copy = copy
@@ -111,7 +112,7 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
             y_std = np.ones(Y.shape[1])
         return X, Y, x_mean, y_mean, x_std, y_std
 
-    def fit(self, X, Y):
+    def fit(self, X, Y, n_predictor_components=1):
         """Fit model to data
 
         Parameters
@@ -123,6 +124,10 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         Y : array-like, shape = [n_samples, 1]
             Target vector, where n_samples is the number of samples.
             This implementation only supports a single response (target) variable.
+
+        n_predictor_components : int (default 1)
+            The number of PLS components to use for the prediction of Y from X
+            This may be implemented later.
         """
         w_ortho = np.zeros((np.asarray(X).shape[1], self.n_components))
         p_ortho = np.zeros((np.asarray(X).shape[1], self.n_components))

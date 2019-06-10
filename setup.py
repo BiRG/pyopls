@@ -17,7 +17,8 @@ setuptools.setup(
     instal_requires=[
         'numpy>=1.11.0',
         'scipy>=0.18.0',
-        'scikit-learn>=0.18.0'
+        'scikit-learn>=0.18.0',
+        'eli5>=0.8.2'
     ],
     classifiers=[
         'Natural Language :: English',
