@@ -1,8 +1,6 @@
 import numpy as np
-from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, cross_val_score
-from sklearn.model_selection import permutation_test_score
+from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, cross_val_score, permutation_test_score
 from sklearn.utils.multiclass import type_of_target
-from eli5.sklearn import PermutationImportance
 
 from .opls import OPLS
 
@@ -31,8 +29,29 @@ class OPLSCrossValidator:
     permutation_q_squared_: array [n_splits]
         The R-squared metric for the left-out data for each permutation
 
-    p_value_ : float
-        The p-value which approximates whether the Q-squared value was obtained by chance.
+    q_squared_p_value_ : float
+        The p-value for the permutation test on Q-squared
+
+    n_components_ : float
+        The optimal number of orthogonal components to remove
+
+    feature_significance_ : array [n_features], type bool
+        Whether permuting the feature results in a significantly different loading for that feature in the model.
+        Defined as the loading for the non-permuted data being outside the "middle" of the distribution of loadings
+        for the permuted data, where the boundaries are a percentile range defined by outer_alpha.
+
+    feature_p_values_ : array [n_features]
+        An estimated p-value for the significance of the feature, defined as the ratio of loading values inside (-p,p)
+        where p is the loading for non-permuted data.
+
+    permuted_loadings_ : array [n_inner_permutations, n_features]
+        Values for the loadings for the permuted data.
+
+    loadings_ : array [n_features]
+        Loadings for the non-permuted data
+
+    estimator_ : OPLS
+        The OPLS regressor
 
 
     References
@@ -40,14 +59,32 @@ class OPLSCrossValidator:
     Johan Trygg and Svante Wold. Orthogonal projections to latent structures (O-PLS).
     J. Chemometrics 2002; 16: 119-128. DOI: 10.1002/cem.695
     """
-    def __init__(self, min_n_components=1, k=10, scale=True, n_permutations=100):
+    def __init__(self,
+                 min_n_components=1,
+                 k=10,
+                 scale=True,
+                 n_permutations=100,
+                 n_inner_permutations=100,
+                 n_outer_permutations=500,
+                 inner_alpha=0.2,
+                 outer_alpha=0.01):
         self.min_n_components = min_n_components
         self.k = k
         self.scale = scale
         self.n_permutations = n_permutations
+        self.n_inner_permutations = n_inner_permutations
+        self.n_outer_permutations = n_outer_permutations
+        self.inner_alpha = inner_alpha
+        self.outer_alpha = outer_alpha
+        self.n_components_ = None
+        self.feature_significance_ = None
+        self.feature_p_values_ = None
         self.q_squared_ = None
         self.permutation_q_squared_ = None
-        self.p_value_ = None
+        self.q_squared_p_value_ = None
+        self.permuted_loadings_ = None
+        self.estimator_ = None
+        self.loadings_ = None
 
     def _get_validator(self, Y):
         if self.k == -1:
@@ -60,13 +97,10 @@ class OPLSCrossValidator:
 
     @staticmethod
     def _press(estimator, X, y):
-        y_pred = estimator.predict(X)
-        return np.sum(np.square(y - y_pred))
+        return np.sum(np.square(y - estimator.predict(X)))
 
     def _validate(self, X, Y, n_components, scoring):
-        opls = OPLS(n_components, self.scale)
-        cv = self._get_validator(Y)
-        return np.sum(cross_val_score(opls, X, Y, scoring=scoring, cv=cv))
+        return np.sum(cross_val_score(OPLS(n_components, self.scale), X, Y, scoring=scoring, cv=self._get_validator(Y)))
 
     def determine_n_components(self, X, Y):
         """Determine number of orthogonal components to remove.
@@ -88,23 +122,83 @@ class OPLSCrossValidator:
                 n_components += 1
         return n_components
 
+    def _get_permuted_loading(self,
+                              X,
+                              Y,
+                              reference_loadings,
+                              n_components,
+                              n_permutations,
+                              column):
+        loadings = np.empty(n_permutations, dtype=float)
+        for i in range(0, n_permutations):
+            X_permuted = np.copy(X)
+            X_permuted[:, column] = np.random.permutation(X[:, column])
+            test_loadings = OPLS(n_components, self.scale).fit(X_permuted, Y).x_loadings_
+            # make sure direction of vector is the same
+            err1 = np.sum(np.square(test_loadings[:column] - reference_loadings[:column])) \
+                   + np.sum(np.square(test_loadings[column:] - reference_loadings[column:]))
+            err2 = np.sum(np.square(test_loadings[:column] + reference_loadings[:column])) \
+                   + np.sum(np.square(test_loadings[column:] + reference_loadings[column:]))
+            sign = -1 if err2 < err1 else 1
+            loadings[i] = sign * test_loadings[column].item()
+        return loadings
+
+    def _determine_significant_features(self,
+                                        X,
+                                        Y,
+                                        n_components):
+        inside_ptile = self.inner_alpha / 2
+        outside_ptile = self.outer_alpha / 2
+        p_values = np.empty(X.shape[1], dtype=float)
+        significant = np.empty(X.shape[1], dtype=bool) # filled with True
+
+        # determine loadings for the features using canonical model
+        reference_loadings = np.ravel(OPLS(n_components, self.scale).fit(X, Y).x_loadings_)
+        loading_max = np.max((reference_loadings, -1 * reference_loadings), axis=0)
+        loading_min = np.min((reference_loadings, -1 * reference_loadings), axis=0)
+        permuted_loadings = [self._get_permuted_loading(X,
+                                                        Y,
+                                                        reference_loadings,
+                                                        n_components,
+                                                        self.n_inner_permutations,
+                                                        i) for i in range(0, X.shape[1])]
+        for column in range(0, X.shape[1]):
+            thresh_min, thresh_max = np.percentile(permuted_loadings[column], (inside_ptile, 1 - inside_ptile))
+            if thresh_min <= reference_loadings[column] <= thresh_max:
+                p_values[column] = (np.sum(permuted_loadings[column] >= loading_max[column])
+                                    + np.sum(permuted_loadings[column] <= loading_min[column]) + 1) / (self.n_inner_permutations + 1)
+                significant[column] = False
+            else:
+                # perform additional permutations if potentially significant
+                permuted_loading = self._get_permuted_loading(X,
+                                                              Y,
+                                                              reference_loadings,
+                                                              n_components,
+                                                              self.n_outer_permutations,
+                                                              column)
+                thresh_min, thresh_max = np.percentile(permuted_loading, (outside_ptile, 1 - outside_ptile))
+                p_values[column] = (np.sum(permuted_loading >= loading_max[column])
+                                    + np.sum(permuted_loading <= loading_min[column]) + 1) / (self.n_outer_permutations + 1)
+                significant[column] = not (thresh_min <= reference_loadings[column] <= thresh_max)
+        return significant, p_values, np.hstack(permuted_loadings).reshape((self.n_inner_permutations, -1))
+
     def fit(self, X, Y):
         # permutation of label to get p-value for accuracy
         n_components = self.determine_n_components(X, Y)
-        opls = OPLS(n_components, self.scale)
-        cv = self._get_validator(Y)
         q_squared, permutation_q_squared, q_squared_p_value = permutation_test_score(
-            opls, X, Y, scoring='r2', cv=cv, n_permutations=self.n_permutations
+            OPLS(n_components, self.scale), X, Y, cv=self._get_validator(Y), n_permutations=self.n_permutations
         )
-        # determine significant features
-        perm = PermutationImportance(
-            opls,  n_iter=self.n_permutations, cv=self._get_validator(Y), scoring='accuracy'
-        )
+        significance, feature_p_values, permuted_loadings = self._determine_significant_features(X, Y, n_components)
 
-        perm.fit(X, Y)
-        self.feature_importances_ = perm.feature_importances_
-        self.feature_importances_std_ = perm.feature_importances_std_
-        perm_worse = np.sum(np.vstack(perm.results_) < q_squared, axis=1) / len(perm.results_)
+        self.feature_significance_ = significance
+        self.feature_p_values_ = feature_p_values
+        self.q_squared_ = q_squared
+        self.permutation_q_squared_ = permutation_q_squared
+        self.q_squared_p_value_ = q_squared_p_value
+        self.permuted_loadings_ = permuted_loadings
 
-
+        self.estimator_ = OPLS(n_components, self.scale)
+        self.estimator_.fit(X, Y)
+        self.loadings_ = self.estimator_.x_loadings_
+        return self
 
