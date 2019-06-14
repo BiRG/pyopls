@@ -99,22 +99,43 @@ class OPLSCrossValidator:
     def _press(estimator, X, y):
         return np.sum(np.square(y - estimator.predict(X)))
 
-    def _validate(self, X, Y, n_components, scoring):
-        return np.sum(cross_val_score(OPLS(n_components, self.scale), X, Y, scoring=scoring, cv=self._get_validator(Y)))
+    def _validate(self, X, Y, n_components, scoring, cv=None):
+        cv = cv or self._get_validator(Y)
+        return np.sum(cross_val_score(OPLS(n_components, self.scale), X, Y, scoring=scoring, cv=cv))
 
-    def determine_n_components(self, X, Y):
+    def determine_n_components(self, X, Y, cv=None):
         """Determine number of orthogonal components to remove.
 
         Orthogonal components are removed until removing a component does not improve the performance
         of the k-fold cross-validated OPLS estimator, as measured by the residual sum of squares of the left-out
         data.
 
+        Parameters
+        ----------
+        X : array-like, shape = [n_samples, n_features]
+            Training vectors, where n_samples is the number of samples and
+            n_features is the number of predictors.
+
+        Y : array-like, shape = [n_samples, 1]
+            Target vector, where n_samples is the number of samples.
+            This implementation only supports a single response (target) variable.
+
+        cv : sklearn.model_selection.BaseCrossValidator
+            A cross validator. If None, _get_validator() is used to determine the validator. If target is binary or
+            multiclass, sklearn.model_selection.StratifiedKFold is used, otherwise sklearn.model_selection.KFold
+            is used unless k=-1, then sklearn.model_selection.LeaveOneOut is used.
+
+        Returns
+        -------
+        n_components: int
+            The number of components to remove to maximize q-squared
 
         """
+        cv = cv or self._get_validator(Y)
         n_components = self.min_n_components
         press = self._validate(X, Y, n_components, OPLSCrossValidator._press)
         while n_components < X.shape[1]:
-            next_press = self._validate(X, Y, n_components + 1, OPLSCrossValidator._press)
+            next_press = self._validate(X, Y, n_components + 1, OPLSCrossValidator._press, cv)
             if next_press/press >= 1:
                 break
             else:
@@ -143,10 +164,39 @@ class OPLSCrossValidator:
             loadings[i] = sign * test_loadings[column].item()
         return loadings
 
-    def _determine_significant_features(self,
-                                        X,
-                                        Y,
-                                        n_components):
+    def determine_significant_features(self,
+                                       X,
+                                       Y,
+                                       n_components):
+        """Determine the significance of each feature
+
+        Orthogonal components are removed until removing a component does not improve the performance
+        of the k-fold cross-validated OPLS estimator, as measured by the residual sum of squares of the left-out
+        data.
+
+        Parameters
+        ----------
+        X : array-like, shape = [n_samples, n_features]
+            Training vectors, where n_samples is the number of samples and
+            n_features is the number of predictors.
+
+        Y : array-like, shape = [n_samples, 1]
+            Target vector, where n_samples is the number of samples.
+            This implementation only supports a single response (target) variable.
+
+        Returns
+        -------
+        significance: array [n_features], type bool
+            The number of components to remove to maximize q-squared
+
+        p_values: array [n_features]
+            The p-values for each feature. The null hypothesis is that permuting the feature does not change it's weight
+            in the one-component PLS model.
+
+        permuted_loadings: array [n_inner_permutations, n_features]
+            The one-component PLS loadings for each permutation
+
+        """
         inside_ptile = self.inner_alpha / 2
         outside_ptile = self.outer_alpha / 2
         p_values = np.empty(X.shape[1], dtype=float)
@@ -182,13 +232,38 @@ class OPLSCrossValidator:
                 significant[column] = not (thresh_min <= reference_loadings[column] <= thresh_max)
         return significant, p_values, np.hstack(permuted_loadings).reshape((self.n_inner_permutations, -1))
 
-    def fit(self, X, Y):
+    def fit(self, X, Y, n_components=None, cv=None):
+        """Evaluate the quality of the OPLS regressor
+
+        The q-squared value and a p-value for each feature's significance is determined. The final regressor can be
+        access as estimator_.
+
+        Parameters
+        ----------
+        X : array-like, shape = [n_samples, n_features]
+            Training vectors, where n_samples is the number of samples and
+            n_features is the number of predictors.
+
+        Y : array-like, shape = [n_samples, 1]
+            Target vector, where n_samples is the number of samples.
+            This implementation only supports a single response (target) variable.
+
+        n_components : int
+            The number of orthogonal components to remove. Will be determined by determine_n_components if None
+
+        cv : sklearn.model_selection.BaseCrossValidator
+            A cross-validator to use for the determination of the number of components and the q-squared value.
+            If None, a cross validator will be selected based on the value of k and the values of the target variable.
+            If target is binary or multiclass, sklearn.model_selection.StratifiedKFold is used, otherwise
+            sklearn.model_selection.KFold is used unless k=-1, then sklearn.model_selection.LeaveOneOut is used.
+        """
+        n_components = n_components or self.determine_n_components(X, Y)
+        cv = cv or self._get_validator(Y)
         # permutation of label to get p-value for accuracy
-        n_components = self.determine_n_components(X, Y)
         q_squared, permutation_q_squared, q_squared_p_value = permutation_test_score(
-            OPLS(n_components, self.scale), X, Y, cv=self._get_validator(Y), n_permutations=self.n_permutations
+            OPLS(n_components, self.scale), X, Y, cv=cv, n_permutations=self.n_permutations
         )
-        significance, feature_p_values, permuted_loadings = self._determine_significant_features(X, Y, n_components)
+        significance, feature_p_values, permuted_loadings = self.determine_significant_features(X, Y, n_components)
 
         self.feature_significance_ = significance
         self.feature_p_values_ = feature_p_values

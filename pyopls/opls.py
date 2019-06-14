@@ -112,7 +112,7 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
             y_std = np.ones(Y.shape[1])
         return X, Y, x_mean, y_mean, x_std, y_std
 
-    def fit(self, X, Y, n_predictor_components=1):
+    def fit(self, X, Y):
         """Fit model to data
 
         Parameters
@@ -125,9 +125,6 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
             Target vector, where n_samples is the number of samples.
             This implementation only supports a single response (target) variable.
 
-        n_predictor_components : int (default 1)
-            The number of PLS components to use for the prediction of Y from X
-            This may be implemented later.
         """
         w_ortho = np.zeros((np.asarray(X).shape[1], self.n_components))
         p_ortho = np.zeros((np.asarray(X).shape[1], self.n_components))
