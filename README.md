@@ -9,7 +9,7 @@ A 1-component PLS regression is performed to evaluate the filtering.
 
 This implementation is partially based on [Paul Anderson's MATLAB implementation](https://github.com/Anderson-Lab/OPLS).
 ## Installation
-Install from this repository using `pip`:
+You can install from this repository using `pip`:
 ```
 pip install git+git://github.com/BiRG/pyopls.git
 ```
