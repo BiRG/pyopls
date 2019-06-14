@@ -2,9 +2,9 @@
 ##### Orthogonal Projection to Latent Structures in Python. 
 
 This pacakge provides a scikit-learn-style regressor to perform OPLS(-DA). OPLS is a pre-processing method to remove
-variation from the descriptor variables that are not correlated to the target variable.
+variation from the descriptor variables that are not correlated to the target variable (1).
 
-A 1-component PLS regression is performed for indicative purposes.
+A 1-component PLS regression is performed to evaluate the filtering.
 
 
 This implementation is partially based on [Paul Anderson's MATLAB implementation](https://github.com/Anderson-Lab/OPLS).
