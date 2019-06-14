@@ -3,9 +3,12 @@
 # License: MIT
 
 import numpy as np
-from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin
+from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, ClassifierMixin
+from sklearn.preprocessing import LabelBinarizer
 from sklearn.utils import check_array
+from sklearn.utils.multiclass import type_of_target
 from sklearn.utils.validation import check_is_fitted, FLOAT_DTYPES
+from scipy.special import softmax
 
 
 class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
@@ -13,6 +16,10 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
 
     This class implements the O-PLS algorithm for one (and only one) response as described by [Trygg 2002].
     This is based on the MATLAB implementation by Paul E. Anderson (https://github.com/Anderson-Lab/OPLS).
+
+    The effectiveness of the
+    filtering can be observed from a plot of one column of orthogonal_x_scores_ vs x_scores_. Separation should be
+    observed along the horizontal axis but not the vertical axis.
 
     Parameters
     ----------
@@ -55,10 +62,13 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
     R_squared_X_ : float
         R^2 value for X. The amount of X variation in the X data explained by the model. This variation is independent
         of the classes and likely to be noise. This should be smaller in an O-PLS model than in a typical PLS model.
+        The closer this value is to 0, the more orthogonal variation has been excluded.
 
     R_squared_Y_ : float
         R^2 value for Y. The amount of Y variation in the X data explained by the model. This is the value most commonly
         called R-squared. To get the R^2Y value for another X-Y pair, use score().
+        This should be higher in an O-PLS model than in a typical PLS model. The closer this value is to 1, the more
+        variation in the target variable is captured.
     
     References
     ----------
@@ -190,7 +200,7 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         self.R_squared_Y_ = ((t.T @ t) * (b_l ** 2.0) * (c ** 2.0) / SS_Y).item()
         return self
 
-    def get_nonorthogonal(self, X):
+    def transform(self, X):
         """Get the non-orthogonal components of X (which are considered in prediction).
 
         Parameters
@@ -214,7 +224,7 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         return z
 
     def predict(self, X):
-        """Apply the dimension reduction learned on the training data.
+        """Predict the labels
 
         Parameters
         ----------
@@ -227,42 +237,11 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         Unlike in sklearn.cross_decomposition.PLSRegression, the prediction from X cannot modify X
         """
         check_is_fitted(self, 'x_mean_')
-        z = self.get_nonorthogonal(X)
+        z = self.transform(X)
         return np.dot(z, self.coef_) + self.y_mean_
 
-    def transform(self, X, Y=None, copy=False):
-        """Get the PLS scores for the data that was removed
-
-        Parameters
-        ----------
-        X : array-like, shape = [n_samples, n_features]
-            Training vectors, where n_samples is the number of samples and
-            n_features is the number of predictors.
-
-        Y : array-like, shape = [n_samples, 1]
-            Target vector, where n_samples is the number of samples.
-            This implementation only supports a single response (target) vector.
-
-        Returns
-        -------
-        x_scores if Y is not given, (x_scores, y_scores) otherwise.
-
-        Notes
-        -----
-        This is not a PLS transformation of the original data. To get that information, run a
-        sklearn.cross_decomposition.PLSRegression on the results of get_nonorthogonal.
-        """
-        check_is_fitted(self, 'x_mean_')
-        X = check_array(X, dtype=FLOAT_DTYPES, copy=copy)
-        x_scores = np.dot((X - self.x_mean_) / self.x_std_, self.orthogonal_x_weights_)
-        if Y is not None:
-            Y = check_array(Y)  # will throw for 1d Y
-            y_scores = np.dot((Y - self.y_mean_) / self.y_std_, self.y_weights_)
-            return x_scores, y_scores
-        return x_scores
-
     def fit_transform(self, X, y=None, **fit_params):
-        """ Learn and apply the dimension reduction on the training data and get the scores for the data that is removed
+        """ Learn and apply the filtering on the training data and get the filtered X
 
         Parameters
         ----------
@@ -273,10 +252,106 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         y : array-like, shape = [n_samples, 1]
             Target vector, where n_samples is the number of samples.
             This O-PLS implementation only supports a single response (target) variable.
+            Y=None will raise ValueError from fit().
+
+        Returns
+        -------
+        X_filtered
+        """
+        return self.fit(X, y).transform(X)
+
+    def orthogonal_transform(self, X, Y, copy=False):
+        """Get the PLS scores for the data that was removed
+        Parameters
+        ----------
+        X : array-like, shape = [n_samples, n_features]
+            Training vectors, where n_samples is the number of samples and
+            n_features is the number of predictors.
+
+        Y : array-like, shape = [n_samples, 1]
+            Target vector, where n_samples is the number of samples.
+            This implementation only supports a single response (target) vector.
+
+        copy: boolean
+            copy X and Y to new matrices? (default True). Note that your inputs arrays will change if this is False.
 
         Returns
         -------
         x_scores if Y is not given, (x_scores, y_scores) otherwise.
+
+        Notes
+        -----
+
+        This might be useful if you want to learn about the variance orthogonal to a target you want to ignore.
+
+        You can of course also get the data removed by the filtering from (X - self.transform(X)).
         """
-        return self.fit(X, y).transform(X, y)
+        check_is_fitted(self, 'x_mean_')
+        X = check_array(X, dtype=FLOAT_DTYPES, copy=copy)
+        x_scores = np.dot((X - self.x_mean_) / self.x_std_, self.orthogonal_x_weights_)
+        if Y is not None:
+            Y = check_array(Y)  # will throw for 1d Y
+            y_scores = np.dot((Y - self.y_mean_) / self.y_std_, self.y_weights_)
+            return x_scores, y_scores
+        return x_scores
+
+
+class OPLSDiscriminator(OPLS, ClassifierMixin):
+    """Orthogonal Projection to Latent Structures Discriminant Analysis (O-PLS-DA)
+
+    This class implements the O-PLS-DA algorithm for one (and only one) binary label as described by [Trygg 2002].
+
+    This method is used for binary y values. It is a special case of a OPLS regressor where the target is a vector of
+    -1 and 1, where 1 and -1 each represent one of the two classes.
+
+    Parameters
+    ----------
+    target_label:
+        If response is multiclass, this is the value associated with 1 in the dummy response.
+
+    Attributes
+    ----------
+    classes_ : List
+        The values of the two labels, in (negative, positive) order.
+
+`   """
+    def __init__(self, n_components=5, scale=True, copy=True, target_label=None):
+        super().__init__(n_components, scale, copy)
+        self.classes_ = None  # a
+        self.target_label = target_label
+
+    @staticmethod
+    def _binarize(y, target_label=None):
+        target_type = type_of_target(y)
+        binarizer = LabelBinarizer(neg_label=-1, pos_label=1)
+        binarized = binarizer.fit_transform(y)
+        if target_type.startswith('binary'):
+            return binarizer.classes_, binarized
+        elif target_type.startswith('multilabel') and target_label is not None:
+            return (np.array(['not_{}'.format(target_label), target_label]),
+                    binarized[:, np.argwhere(binarizer.classes_ == target_label)].reshape(-1, 1))
+        else:
+            raise ValueError("sklearn.utils.multiclass.type_of_target(y) must be 'binary' or 'multilabel'. "
+                             "Use OPLS() for regression.")
+
+    def fit(self, X, Y, target_label=None):
+        if target_label is not None:
+            self.target_label = target_label
+        self.classes_, binarized = self._binarize(Y, self.target_label)
+        super().fit(X, binarized)
+
+    def predict(self, X):
+        y_pred = super().predict(X)
+        return np.array([self.classes_[0] if val < 0 else self.classes_[1] for val in y_pred])
+
+    def predict_proba(self, X):
+        y_pred = super().predict(X)
+        prob_pos = softmax(y_pred)
+        return np.array([[1-prob, prob] for prob in prob_pos])
+
+    def predict_log_proba(self, X):
+        return np.log(self.predict_proba(X))
+
+
+
 

@@ -1,8 +1,9 @@
 import numpy as np
 from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, cross_val_score, permutation_test_score
 from sklearn.utils.multiclass import type_of_target
+import warnings
 
-from .opls import OPLS
+from .opls import OPLS, OPLSDiscriminator
 
 
 class OPLSCrossValidator:
@@ -26,11 +27,27 @@ class OPLSCrossValidator:
     ----------
     q_squared_: float, overall Q-squared metric for the regression, the R-squared value of the left-out data.
 
-    permutation_q_squared_: array [n_splits]
+    permutation_q_squared_: array [n_splits*n_permutations]
         The R-squared metric for the left-out data for each permutation
 
     q_squared_p_value_ : float
         The p-value for the permutation test on Q-squared
+
+    accuracy_ : float, accuracy for discrimination
+
+    permutation_accuracy_: array [n_splits*n_permutations]
+        The accuracy of the left-out data for each permutation
+
+    accuracy_p_value_: float
+        The p-value for the permutation test on accuracy
+
+    roc_auc_ : float, area under ROC curve for discrimination
+
+    permutation_roc_auc_: array [n_splits*n_permutations]
+        The area under the ROC curve of the left-out data for each permutation.
+
+    roc_auc_p_value_: float
+        The p-value for the permutation test on the are under the ROC curve.
 
     n_components_ : float
         The optimal number of orthogonal components to remove
@@ -82,6 +99,14 @@ class OPLSCrossValidator:
         self.q_squared_ = None
         self.permutation_q_squared_ = None
         self.q_squared_p_value_ = None
+
+        self.accuracy_ = None
+        self.permutation_accuracy_ = None
+        self.accuracy_p_value_ = None
+        self.roc_auc_ = None
+        self.permutation_roc_auc_ = None
+        self.roc_auc_p_value_ = None
+
         self.permuted_loadings_ = None
         self.estimator_ = None
         self.loadings_ = None
@@ -96,14 +121,23 @@ class OPLSCrossValidator:
                 return KFold(self.k)
 
     @staticmethod
-    def _press(estimator, X, y):
-        return np.sum(np.square(y - estimator.predict(X)))
+    def _is_discrimination(Y, target_label=None):
+        if type_of_target(Y).startswith('multilabel') and target_label is None:
+            warnings.warn('Multilabel response with no target specified. Treating as continuous.')
+            return False
+        return type_of_target(Y).startswith('binary') or type_of_target(Y).startswith('multilabel')
 
-    def _validate(self, X, Y, n_components, scoring, cv=None):
+    def _get_scoring(self, Y, target_label=None):
+        return 'accuracy' if self._is_discrimination(Y, target_label) else 'neg_mean_squared_error'
+
+    def _get_estimator(self, Y, n_components, target_label=None):
+        return OPLSDiscriminator(n_components, self.scale) if self._is_discrimination(Y, target_label) else OPLS(n_components, self.scale)
+
+    def _validate(self, X, Y, n_components, scoring, cv=None, target_label=None):
         cv = cv or self._get_validator(Y)
-        return np.sum(cross_val_score(OPLS(n_components, self.scale), X, Y, scoring=scoring, cv=cv))
+        return np.sum(cross_val_score(self._get_estimator(Y, n_components, target_label), X, Y, scoring=scoring, cv=cv))
 
-    def determine_n_components(self, X, Y, cv=None):
+    def determine_n_components(self, X, Y, cv=None, scoring=None, target_label=None):
         """Determine number of orthogonal components to remove.
 
         Orthogonal components are removed until removing a component does not improve the performance
@@ -125,6 +159,14 @@ class OPLSCrossValidator:
             multiclass, sklearn.model_selection.StratifiedKFold is used, otherwise sklearn.model_selection.KFold
             is used unless k=-1, then sklearn.model_selection.LeaveOneOut is used.
 
+        scoring :
+            Scoring method to use. Will default to 'accuracy' for OPLS-DA and 'neg_mean_squared_error' for OPLS regression.
+
+        target_label : scalar
+            If this is a discrimination problem and the response variable is multiclass, the value for the positive
+            value in the dummy vector for PLS-DA.
+
+
         Returns
         -------
         n_components: int
@@ -132,47 +174,31 @@ class OPLSCrossValidator:
 
         """
         cv = cv or self._get_validator(Y)
+        scoring = self._get_scoring(Y, target_label)
         n_components = self.min_n_components
-        press = self._validate(X, Y, n_components, OPLSCrossValidator._press)
+
+        score = self._validate(X, Y, n_components, scoring)
         while n_components < X.shape[1]:
-            next_press = self._validate(X, Y, n_components + 1, OPLSCrossValidator._press, cv)
-            if next_press/press >= 1:
+            next_score = self._validate(X, Y, n_components + 1, scoring, cv, target_label)
+            if next_score <= score:
                 break
             else:
-                press = next_press
+                score = next_score
                 n_components += 1
         return n_components
-
-    def _get_permuted_loading(self,
-                              X,
-                              Y,
-                              reference_loadings,
-                              n_components,
-                              n_permutations,
-                              column):
-        loadings = np.empty(n_permutations, dtype=float)
-        for i in range(0, n_permutations):
-            X_permuted = np.copy(X)
-            X_permuted[:, column] = np.random.permutation(X[:, column])
-            test_loadings = OPLS(n_components, self.scale).fit(X_permuted, Y).x_loadings_
-            # make sure direction of vector is the same
-            err1 = np.sum(np.square(test_loadings[:column] - reference_loadings[:column])) \
-                   + np.sum(np.square(test_loadings[column:] - reference_loadings[column:]))
-            err2 = np.sum(np.square(test_loadings[:column] + reference_loadings[:column])) \
-                   + np.sum(np.square(test_loadings[column:] + reference_loadings[column:]))
-            sign = -1 if err2 < err1 else 1
-            loadings[i] = sign * test_loadings[column].item()
-        return loadings
 
     def determine_significant_features(self,
                                        X,
                                        Y,
-                                       n_components):
+                                       n_components,
+                                       target_label=None):
         """Determine the significance of each feature
 
         Orthogonal components are removed until removing a component does not improve the performance
         of the k-fold cross-validated OPLS estimator, as measured by the residual sum of squares of the left-out
         data.
+
+        This is always done with a regular OPLS regressor
 
         Parameters
         ----------
@@ -183,6 +209,12 @@ class OPLSCrossValidator:
         Y : array-like, shape = [n_samples, 1]
             Target vector, where n_samples is the number of samples.
             This implementation only supports a single response (target) variable.
+
+        n_components : int
+            The number of orthogonal components to remove
+
+        target_label :
+            If this is a discrimination problem, the value of the response used as the positive value in the dummy response.
 
         Returns
         -------
@@ -197,21 +229,33 @@ class OPLSCrossValidator:
             The one-component PLS loadings for each permutation
 
         """
+
+        def _get_permuted_loading(n_permutations, j):
+            loadings = np.empty(n_permutations, dtype=float)
+            for i in range(0, n_permutations):
+                X_permuted = np.copy(X)
+                X_permuted[:, j] = np.random.permutation(X[:, j])
+                test_loadings = estimator.fit(X_permuted, Y).x_loadings_
+                # make sure direction of vector is the same
+                err1 = np.sum(np.square(test_loadings[:j] - reference_loadings[:j])) \
+                       + np.sum(np.square(test_loadings[j:] - reference_loadings[j:]))
+                err2 = np.sum(np.square(test_loadings[:j] + reference_loadings[:j])) \
+                       + np.sum(np.square(test_loadings[j:] + reference_loadings[j:]))
+                sign = -1 if err2 < err1 else 1
+                loadings[i] = sign * test_loadings[column].item()
+            return loadings
+
         inside_ptile = self.inner_alpha / 2
         outside_ptile = self.outer_alpha / 2
         p_values = np.empty(X.shape[1], dtype=float)
-        significant = np.empty(X.shape[1], dtype=bool) # filled with True
+        significant = np.empty(X.shape[1], dtype=bool)  # filled with True
 
         # determine loadings for the features using canonical model
-        reference_loadings = np.ravel(OPLS(n_components, self.scale).fit(X, Y).x_loadings_)
+        estimator = self._get_estimator(Y, n_components, target_label)
+        reference_loadings = np.ravel(estimator.fit(X, Y).x_loadings_)
         loading_max = np.max((reference_loadings, -1 * reference_loadings), axis=0)
         loading_min = np.min((reference_loadings, -1 * reference_loadings), axis=0)
-        permuted_loadings = [self._get_permuted_loading(X,
-                                                        Y,
-                                                        reference_loadings,
-                                                        n_components,
-                                                        self.n_inner_permutations,
-                                                        i) for i in range(0, X.shape[1])]
+        permuted_loadings = [_get_permuted_loading(self.n_inner_permutations, i) for i in range(0, X.shape[1])]
         for column in range(0, X.shape[1]):
             thresh_min, thresh_max = np.percentile(permuted_loadings[column], (inside_ptile, 1 - inside_ptile))
             if thresh_min <= reference_loadings[column] <= thresh_max:
@@ -220,19 +264,14 @@ class OPLSCrossValidator:
                 significant[column] = False
             else:
                 # perform additional permutations if potentially significant
-                permuted_loading = self._get_permuted_loading(X,
-                                                              Y,
-                                                              reference_loadings,
-                                                              n_components,
-                                                              self.n_outer_permutations,
-                                                              column)
+                permuted_loading = _get_permuted_loading(self.n_outer_permutations, column)
                 thresh_min, thresh_max = np.percentile(permuted_loading, (outside_ptile, 1 - outside_ptile))
                 p_values[column] = (np.sum(permuted_loading >= loading_max[column])
                                     + np.sum(permuted_loading <= loading_min[column]) + 1) / (self.n_outer_permutations + 1)
                 significant[column] = not (thresh_min <= reference_loadings[column] <= thresh_max)
         return significant, p_values, np.hstack(permuted_loadings).reshape((self.n_inner_permutations, -1))
 
-    def fit(self, X, Y, n_components=None, cv=None):
+    def fit(self, X, Y, n_components=None, cv=None, target_label=None):
         """Evaluate the quality of the OPLS regressor
 
         The q-squared value and a p-value for each feature's significance is determined. The final regressor can be
@@ -256,24 +295,42 @@ class OPLSCrossValidator:
             If None, a cross validator will be selected based on the value of k and the values of the target variable.
             If target is binary or multiclass, sklearn.model_selection.StratifiedKFold is used, otherwise
             sklearn.model_selection.KFold is used unless k=-1, then sklearn.model_selection.LeaveOneOut is used.
+
+        target_label:
+            If this is a discrimination problem, the label to use for 1 in the dummy response
+
         """
         n_components = n_components or self.determine_n_components(X, Y)
+        discrimination = self._is_discrimination(Y, target_label)
         cv = cv or self._get_validator(Y)
-        # permutation of label to get p-value for accuracy
-        q_squared, permutation_q_squared, q_squared_p_value = permutation_test_score(
+        # permutation of label to get p-value for q_squared
+        self.q_squared_, self.permutation_q_squared_, self.q_squared_p_value_ = permutation_test_score(
             OPLS(n_components, self.scale), X, Y, cv=cv, n_permutations=self.n_permutations
         )
-        significance, feature_p_values, permuted_loadings = self.determine_significant_features(X, Y, n_components)
+        # if this is a discrimination problem, get accuracy and the AUC of the ROC
+        if discrimination:
+            self.accuracy_, self.permutation_accuracy_, self.accuracy_p_value_ = permutation_test_score(
+                OPLSDiscriminator(n_components, self.scale, target_label=target_label),
+                X, Y, cv=cv, scoring='accuracy', n_permutations=self.n_permutations
+            )
+            self.roc_auc_, self.permutation_roc_auc_, self.roc_auc_p_value_ = permutation_test_score(
+                OPLSDiscriminator(n_components, self.scale, target_label=target_label),
+                X, Y, cv=cv, scoring='roc_auc', n_permutations=self.n_permutations
+            )
+        else:
+            self.accuracy_ = self.permutation_accuracy_ = self.accuracy_p_value_ = None
+            self.roc_auc_ = self.permutation_roc_auc_ = self.roc_auc_p_value_ = None
 
-        self.feature_significance_ = significance
-        self.feature_p_values_ = feature_p_values
-        self.q_squared_ = q_squared
-        self.permutation_q_squared_ = permutation_q_squared
-        self.q_squared_p_value_ = q_squared_p_value
-        self.permuted_loadings_ = permuted_loadings
+        (self.feature_significance_,
+         self.feature_p_values_,
+         self.permuted_loadings_) = self.determine_significant_features(X, Y, n_components)
 
-        self.estimator_ = OPLS(n_components, self.scale)
-        self.estimator_.fit(X, Y)
+        if discrimination:
+            self.estimator_ = OPLSDiscriminator(n_components, self.scale)
+            self.estimator_.fit(X, Y, target_label)
+        else:
+            self.estimator_ = OPLS(n_components, self.scale)
+            self.estimator_.fit(X, Y)
+
         self.loadings_ = self.estimator_.x_loadings_
         return self
-

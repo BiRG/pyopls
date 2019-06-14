@@ -17,23 +17,47 @@ This package requires Python 3.5+
 ## OPLS Estimator
 ### Fit a regressor
 Calling `OPLS.fit()` will calculate the orthogonal components and train a one-component PLS model to evaluate the 
-filtered data. Other methods trained on the results of `OPLS.get_nonorthogonal()` may perform better.
+filtered data. Other methods trained on the results of `OPLS.transform()` may perform better. The effectiveness of the 
+filtering can be observed from a plot of one column of `orthogonal_x_scores_` vs `x_scores_`. Separation should be 
+observed along the horizontal axis but not the vertical axis.
 #### Example
 ```pythonstub
 from pyopls import OPLS
-estimator = OPLS(5, scale=True)
+estimator = OPLS(5)
 estimator.fit(X_train, y_train)
 y_pred = estimator.predict(X_test)
 ```
-### Filter orthogonal components from `X`
-This can be used as a pre-processing step for other methods.
+### Fit a discriminator (O-PLS-DA)
+The `OPLSDiscriminator` class is a subclass of `OPLS` designed to facilitate O-PLS-DA. Categorical variables will be
+binarized. If there is more than one category, only one category can be targeted at a time. The value for this category 
+should be proved as `target_label`. In this example, we have three categories in `y`, 'a', 'b' and 'c' and we want to 
+descriminate 'a' from the other two. The `predict_proba` and `predict_log_proba` predict the probability and log-probability
+respectively that the records belong to each of the two classes. This is done by applying a softmax function to the 
+values predicted by the regressor.
+
 #### Example
 ```pythonstub
-from sklearn.cross_decomposition import PLSRegression
-X_res = estimator.get_nonorthogonal(X)
-pls_regressor = PLSRegression(5)
-pls_regressor.fit(X_train, y_train)
-y_pred = pls_regressor.predict(X_test)
+from pyopls import OPLSDiscriminator
+estimator = OPLSDiscriminator(5, target_label='a')
+estimator.fit(X_train, y_train)
+probs = estimator.predict_proba(X_test)
+```
+
+### Filter orthogonal components from `X`
+This can be used as a pre-processing step for other methods.
+
+#### Example
+In this example the unlabeled data `X_test` is filtered using a model built from the labeled data `X_train` (labeled by 
+`y_train`). Then, a SVM regressor is trained on the filtered `X_train` and used to predict the labels on `X_test`.
+```pythonstub
+from pyopls import OPLS
+from sklearn.svm import NuSVR
+estimator = OPLS(5)
+X_res_train = estimator.fit_transform(X_train, y_train)  # filter training data
+X_res_test = estimator.transform(X_test)  # filter test data based on training data model
+sv_regressor = NuSVR()
+sv_regressor.fit(X_res_train, y_train)
+y_pred = sv_regressor.predict(X_test_train)
 ```
 
 ## Cross-validation and Feature Importance
