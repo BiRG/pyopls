@@ -28,7 +28,7 @@ estimator.fit(X_train, y_train)
 y_pred = estimator.predict(X_test)
 ```
 ### Fit a discriminator (O-PLS-DA)
-The `OPLSDiscriminator` class is a subclass of `OPLS` designed to facilitate O-PLS-DA. Categorical variables will be
+The `OPLSDA` class is a subclass of `OPLS` designed to facilitate O-PLS-DA. Categorical variables will be
 binarized. If there is more than one category, only one category can be targeted at a time. The value for this category 
 should be proved as `target_label`. In this example, we have three categories in `y`, 'a', 'b' and 'c' and we want to 
 descriminate 'a' from the other two. The `predict_proba` and `predict_log_proba` predict the probability and log-probability
@@ -38,7 +38,7 @@ values predicted by the regressor.
 #### Example
 ```pythonstub
 from pyopls import OPLSDiscriminator
-estimator = OPLSDiscriminator(5, target_label='a')
+estimator = OPLSDA(5, target_label='a')
 estimator.fit(X_train, y_train)
 probs = estimator.predict_proba(X_test)
 ```

@@ -4,11 +4,10 @@
 
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, ClassifierMixin
+from sklearn.exceptions import NotFittedError
 from sklearn.preprocessing import LabelBinarizer
-from sklearn.utils import check_array
-from sklearn.utils.multiclass import type_of_target
+from sklearn.utils import check_array, compute_class_weight
 from sklearn.utils.validation import check_is_fitted, FLOAT_DTYPES
-from scipy.special import softmax
 
 
 class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
@@ -59,12 +58,12 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
     coef_ : array, [n_features, 1]
         The coefficients of the linear model created from the filtered data
 
-    R_squared_X_ : float
+    r_squared_X_ : float
         R^2 value for X. The amount of X variation in the X data explained by the model. This variation is independent
         of the classes and likely to be noise. This should be smaller in an O-PLS model than in a typical PLS model.
         The closer this value is to 0, the more orthogonal variation has been excluded.
 
-    R_squared_Y_ : float
+    r_squared_Y_ : float
         R^2 value for Y. The amount of Y variation in the X data explained by the model. This is the value most commonly
         called R-squared. To get the R^2Y value for another X-Y pair, use score().
         This should be higher in an O-PLS model than in a typical PLS model. The closer this value is to 1, the more
@@ -95,8 +94,9 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         self.y_std_ = None
         self.sum_sq_X_ = None
         self.sum_sq_Y_ = None
-        self.R_squared_X_ = None
-        self.R_squared_Y_ = None
+        self.r_squared_X_ = None
+        self.r_squared_Y_ = None
+        self.residual_sum_sq_Y_ = None
 
     @staticmethod
     def _center_scale_xy(X, Y, scale=True):
@@ -172,13 +172,12 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         w = ((Y_res.T @ X_res) / (Y_res.T @ Y_res)).T
         w = w / np.linalg.norm(w)
         t = (X_res @ w) / (w.T @ w)
-        c = (((t.T @ Y_res) / (t.T @ t)).T).item()  # this only works with single-column y
+        c = ((t.T @ Y_res) / (t.T @ t)).item()  # this only works with single-column y
         u = (Y_res * c) / (c ** 2)
         p = ((t.T @ X_res) / (t.T @ t)).T
         # b coef, whatever that is (it's part of the calculation of the coefs, possibly a y-loading?)
         b_l = ((1.0 / (t.T @ t)) * (u.T @ t)).item()
 
-        self.b_ = b_l  # not sure what "b" is really...
         # self.y_loadings_= ??
         self.y_weights_ = c
         self.y_scores_ = u
@@ -196,8 +195,9 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         B_pls = (W_star * b_l * c)
         self.coef_ = B_pls.reshape((B_pls.size, 1))
 
-        self.R_squared_X_ = ((t.T @ t) * (p.T @ p) / SS_X).item()
-        self.R_squared_Y_ = ((t.T @ t) * (b_l ** 2.0) * (c ** 2.0) / SS_Y).item()
+        self.r_squared_X_ = ((t.T @ t) * (p.T @ p) / SS_X).item()
+        self.r_squared_Y_ = ((t.T @ t) * (b_l ** 2.0) * (c ** 2.0) / SS_Y).item()
+        self.residual_sum_sq_Y_ = -1 * (self.r_squared_Y_ - 1) * self.sum_sq_Y_
         return self
 
     def transform(self, X):
@@ -295,63 +295,98 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
             return x_scores, y_scores
         return x_scores
 
+    def _press(self, X, y):
+        return np.sum(np.square(y - self.predict(X))).item()
 
-class OPLSDiscriminator(OPLS, ClassifierMixin):
+    def q2_score(self, X, y):
+        return 1 - (self._press(X, y) / self.sum_sq_Y_)
+
+    def r2_score(self):
+        return self.r_squared_Y_
+
+
+class OPLSDA(BaseEstimator, ClassifierMixin):
     """Orthogonal Projection to Latent Structures Discriminant Analysis (O-PLS-DA)
 
-    This class implements the O-PLS-DA algorithm for one (and only one) binary label as described by [Trygg 2002].
+    This class implements the O-PLS-DA algorithm for one (and only one) categorical or binary target.
+    For multiclass targets, one OPLS regressor is used per class.
 
     This method is used for binary y values. It is a special case of a OPLS regressor where the target is a vector of
     -1 and 1, where 1 and -1 each represent one of the two classes.
 
+    All predictions above 1 and below -1 are considered equally positive or negative for the class, respectively.
+    A softmax function is applied to the clipped values to compute a pseudo-probability as a measure of the regressors'
+    confidence.
+
+    The predict method assigns a class based on which predictor has the highest confidence the data belongs to its class
+    Ties are unlikely but are resolved in favor of the selector with the best r-squared value.
+
     Parameters
     ----------
-    target_label:
-        If response is multiclass, this is the value associated with 1 in the dummy response.
 
     Attributes
     ----------
-    classes_ : List
-        The values of the two labels, in (negative, positive) order.
+    regressors_ : List[OPLS]
+        The OPLS regressors for each class
 
+    References
+    ----------
+    J. A. Westerhuis, E. J. J. van Velzen, H. C. J. Hoefsloot and Age K. Smilde. Discriminant Q2 (DQ2) for improved
+    discrimination in PLSDA models. Metabolomics (2008) 4. DOI:
 `   """
-    def __init__(self, n_components=5, scale=True, copy=True, target_label=None):
-        super().__init__(n_components, scale, copy)
-        self.classes_ = None  # a
-        self.target_label = target_label
+    def __init__(self, n_components=5, scale=True, copy=True):
+        self.n_components = n_components
+        self.scale = scale
+        self.copy = copy
+        self.regressors_ = []
+        self.binarizer_ = None
+        self.class_weights_ = None
 
-    @staticmethod
-    def _binarize(y, target_label=None):
-        target_type = type_of_target(y)
-        binarizer = LabelBinarizer(neg_label=-1, pos_label=1)
-        binarized = binarizer.fit_transform(y)
-        if target_type.startswith('binary'):
-            return binarizer.classes_, binarized
-        elif target_type.startswith('multilabel') and target_label is not None:
-            return (np.array(['not_{}'.format(target_label), target_label]),
-                    binarized[:, np.argwhere(binarizer.classes_ == target_label)].reshape(-1, 1))
-        else:
-            raise ValueError("sklearn.utils.multiclass.type_of_target(y) must be 'binary' or 'multilabel'. "
-                             "Use OPLS() for regression.")
-
-    def fit(self, X, Y, target_label=None):
-        if target_label is not None:
-            self.target_label = target_label
-        self.classes_, binarized = self._binarize(Y, self.target_label)
-        super().fit(X, binarized)
+    def fit(self, X, Y):
+        self.binarizer_ = LabelBinarizer(neg_label=-1, pos_label=1)
+        binarized = self.binarizer_.fit_transform(Y).astype(float)
+        self.regressors_ = [
+            OPLS(self.n_components, self.scale, self.copy).fit(X, binarized[:, i].reshape(-1, 1)) for i in range(0, binarized.shape[1])
+        ]
+        self.class_weights_ = compute_class_weight('balanced', self.binarizer_.classes_, Y)
 
     def predict(self, X):
-        y_pred = super().predict(X)
-        return np.array([self.classes_[0] if val < 0 else self.classes_[1] for val in y_pred])
+        probs = self.predict_proba(X)
+        r_squared = np.array([regressor.r_squared_Y_ for regressor in self.regressors_])
+        r_squared_inds = np.argsort(r_squared)
+        best_regressor = [r_squared_inds[i] for i in np.argmax(probs[:, r_squared_inds], axis=1)]  # original column
+        return np.array([self.binarizer_.classes_[i] for i in best_regressor])
 
     def predict_proba(self, X):
-        y_pred = super().predict(X)
-        prob_pos = softmax(y_pred)
-        return np.array([[1-prob, prob] for prob in prob_pos])
+        if not len(self.regressors_):
+            raise NotFittedError("This %(name)s instance is not fitted yet. Call 'fit' with "
+                                 "appropriate arguments before using this method.")
+        # all values less than -1 are counted as -1, all values greater than 1 counted as 1
+        # this accounts for lower-confidence regressors.
+        return 0.5 * (np.hstack([np.clip(regressor.predict(X), -1, 1) for regressor in self.regressors_]) + 1)
 
     def predict_log_proba(self, X):
         return np.log(self.predict_proba(X))
 
+    def _press(self, X, y):
+        # pressd for each regressor
+        binarized = self.binarizer_.transform(y).astype(float)
+        y_pred = np.hstack([np.clip(regressor.predict(X), -1, 1) for regressor in self.regressors_])
+        return np.sum(np.square(binarized - y_pred), axis=0)
 
+    def regressor_q2_score(self, X, y):
+        # the q-squared measure for each individual regressor
+        press = self._press(X, y)
+        sum_sq = np.array([regressor.sum_sq_Y_ for regressor in self.regressors_])
+        return 1 - (press / sum_sq)
 
+    def q2_score(self, X, y):
+        # a q-squared measure of how good all the regressors are together.
+        press = self._press(X, y).sum()
+        sum_sq = sum([regressor.sum_sq_Y_ for regressor in self.regressors_])
+        return 1 - (press / sum_sq)
 
+    def r2_score(self):
+        residual_sum_sq = sum([regressor.residual_sum_sq_Y_ for regressor in self.regressors_])
+        total_sum_sq = sum([regressor.sum_sq_Y_ for regressor in self.regressors_])
+        return 1 - (residual_sum_sq / total_sum_sq)

@@ -1,2 +1,2 @@
-from pyopls.opls import OPLS, OPLSDiscriminator
+from pyopls.opls import OPLS, OPLSDA
 from pyopls.cross_validation import OPLSCrossValidator
