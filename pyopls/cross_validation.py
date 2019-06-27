@@ -1,12 +1,12 @@
-from typing import Union
-
 import numpy as np
+from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, cross_val_score, permutation_test_score
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.utils.multiclass import type_of_target
 from sklearn.utils._joblib import Parallel, delayed
+from sklearn.utils import check_array
 
-from .opls import OPLS, OPLSDA
+from .opls import OPLS
 
 
 class OPLSCrossValidator:
@@ -115,9 +115,14 @@ class OPLSCrossValidator:
         self.permutation_roc_auc_ = None
         self.roc_auc_p_value_ = None
 
+        self.discriminator_q_squared_ = None
+        self.discriminator_q_squared_p_value_ = None
+        self.permutation_discriminator_q_squared_ = None
+
         self.permuted_loadings_ = None
         self.estimator_ = None
         self.loadings_ = None
+        self.binarizer_ = None
 
     def _get_validator(self, Y):
         if self.k == -1:
@@ -129,23 +134,66 @@ class OPLSCrossValidator:
                 return KFold(self.k)
 
     def _is_discrimination(self, Y):
-        if not self.force_regression:
-            return type_of_target(Y).startswith('binary') or type_of_target(Y).startswith('multilabel')
-        return False
+        return type_of_target(Y).startswith('binary') and not self.force_regression
 
     def _get_scoring(self, Y):
-        return 'accuracy' if self._is_discrimination(Y) else 'neg_mean_squared_error'
+        return self._neg_pressd if self._is_discrimination(Y) else self._neg_press
 
     def _get_estimator(self, Y, n_components):
-        return OPLSDA(n_components, self.scale) if self._is_discrimination(Y) else OPLS(n_components, self.scale)
+        return OPLS(n_components, self.scale)
 
     def _validate(self, X, Y, n_components, scoring, cv=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
         cv = cv or self._get_validator(Y)
-        return np.sum(cross_val_score(self._get_estimator(Y, n_components),
+        return np.sum(cross_val_score(OPLS(n_components, self.scale),
                                       X, Y, scoring=scoring, cv=cv,
                                       n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch))
 
-    def determine_n_components(self, X, Y, cv=None, scoring=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
+    @staticmethod
+    def _r2_Y(est: OPLS, X, y):
+        return est.r2_score()
+
+    @staticmethod
+    def _q2_Y(est: OPLS, X, y):
+        return est.q2_score(X, y)
+
+    @staticmethod
+    def _q2d_Y(est: OPLS, X, y):
+        return est.q2d_score(X, y)
+
+    @staticmethod
+    def _neg_press(est: OPLS, X, y):
+        return -1 * est.press(X, y)
+
+    @staticmethod
+    def _neg_pressd(est: OPLS, X, y):
+        return -1 * est.pressd(X, y)
+
+    @staticmethod
+    def _discriminator_accuracy(est: OPLS, X, y):
+        y_pred = np.sign(est.predict(X))
+        return accuracy_score(y.astype(int), y_pred.astype(int))
+
+    @staticmethod
+    def _discriminator_roc_auc(est: OPLS, X, y):
+        y_score = 0.5 * (np.clip(est.predict(X), -1, 1) + 1)
+        return roc_auc_score(y, y_score)
+
+    def _process_binary_target(self, y):
+        self.binarizer_ = LabelBinarizer(-1, 1)
+        return self.binarizer_.fit_transform(y).astype(float)
+
+    def _check_target(self, y):
+        y = check_array(y, dtype=None, copy=True)
+        if type_of_target(y).startswith('multiclass') and not self.force_regression:
+            raise ValueError('Multiclass input not directly supported. '
+                             'Try binarizing with sklearn.preprocessing.LabelBinarizer.')
+        if self._is_discrimination(y):
+            y = self._process_binary_target(y)
+        else:
+            self.binarizer_ = None
+        return y
+
+    def determine_n_components(self, X, y, cv=None, scoring=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
         """Determine number of orthogonal components to remove.
 
         Orthogonal components are removed until removing a component does not improve the performance
@@ -158,7 +206,7 @@ class OPLSCrossValidator:
             Training vectors, where n_samples is the number of samples and
             n_features is the number of predictors.
 
-        Y : array-like, shape = [n_samples, 1]
+        y : array-like, shape = [n_samples, 1]
             Target vector, where n_samples is the number of samples.
             This implementation only supports a single response (target) variable.
 
@@ -201,13 +249,15 @@ class OPLSCrossValidator:
             The number of components to remove to maximize q-squared
 
         """
-        cv = cv or self._get_validator(Y)
-        scoring = scoring or self._get_scoring(Y)
+        X = check_array(X, dtype=float, copy=True)
+        y = self._check_target(y)
+        cv = cv or self._get_validator(y)
+        scoring = scoring or self._get_scoring(y)
         n_components = self.min_n_components
 
-        score = self._validate(X, Y, n_components, scoring)
+        score = self._validate(X, y, n_components, scoring)
         while n_components < X.shape[1]:
-            next_score = self._validate(X, Y, n_components + 1, scoring, cv, n_jobs, verbose, pre_dispatch)
+            next_score = self._validate(X, y, n_components + 1, scoring, cv, n_jobs, verbose, pre_dispatch)
             if next_score <= score:
                 break
             else:
@@ -217,18 +267,18 @@ class OPLSCrossValidator:
 
     def determine_significant_features(self,
                                        X,
-                                       Y,
+                                       y,
                                        n_components,
                                        n_jobs=None,
                                        verbose=0,
                                        pre_dispatch='2*n_jobs'):
         """Determine the significance of each feature
 
-        Orthogonal components are removed until removing a component does not improve the performance
-        of the k-fold cross-validated OPLS estimator, as measured by the residual sum of squares of the left-out
-        data.
+        This is done by permuting each feature in X and measuring the loading.
+        The feature is considered significant if the loadings are signficantly different.
 
         This is always done with a regular OPLS regressor
+        OPLS-DA should be binarized first.
 
         Parameters
         ----------
@@ -236,7 +286,7 @@ class OPLSCrossValidator:
             Training vectors, where n_samples is the number of samples and
             n_features is the number of predictors.
 
-        Y : array-like, shape = [n_samples, 1]
+        y : array-like, shape = [n_samples, 1]
             Target vector, where n_samples is the number of samples.
             This implementation only supports a single response (target) variable.
 
@@ -282,14 +332,15 @@ class OPLSCrossValidator:
         permuted_loadings: array [n_regressors, n_inner_permutations, n_features]
             The one-component PLS loadings for each permutation
         """
-
+        X = check_array(X, dtype=float, copy=True)
+        y = self._check_target(y)
         # permuted loadings for one feature
         def _get_permuted_loading(regressor, n_permutations, j):
             loadings = np.empty(n_permutations, dtype=float)
             for i in range(0, n_permutations):
                 X_permuted = np.copy(X)
                 X_permuted[:, j] = np.random.permutation(X[:, j])
-                test_loadings = regressor.fit(X_permuted, Y).x_loadings_
+                test_loadings = regressor.fit(X_permuted, y).x_loadings_
                 # make sure direction of vector is the same
                 err1 = np.sum(np.square(test_loadings[:j] - reference_loadings[:j])) \
                        + np.sum(np.square(test_loadings[j:] - reference_loadings[j:]))
@@ -299,55 +350,41 @@ class OPLSCrossValidator:
                 loadings[i] = sign * test_loadings[j].item()
             return loadings
 
-        def _determine_feature_significance(i, column):
-            thresh_min, thresh_max = np.percentile(permuted_loadings[i][column], (inside_ptile, 1 - inside_ptile))
-            if thresh_min <= reference_loadings[i][column] <= thresh_max:
-                p_value = ((np.sum(permuted_loadings[i][column] >= loading_max[i][column])
-                            + np.sum(permuted_loadings[i][column] <= loading_min[i][column]) + 1)
+        def _determine_feature_significance(column):
+            thresh_min, thresh_max = np.percentile(permuted_loadings[column], (inside_ptile, 1 - inside_ptile))
+            if thresh_min <= reference_loadings[column] <= thresh_max:
+                p_value = ((np.sum(permuted_loadings[column] >= loading_max[column])
+                            + np.sum(permuted_loadings[column] <= loading_min[column]) + 1)
                            / (self.n_inner_permutations + 1))
                 is_significant = False
             else:
                 # perform additional permutations if potentially significant
-                permuted_loading = _get_permuted_loading(regressors[i], self.n_outer_permutations, column)
+                permuted_loading = _get_permuted_loading(estimator, self.n_outer_permutations, column)
                 thresh_min, thresh_max = np.percentile(permuted_loading, (outside_ptile, 1 - outside_ptile))
-                p_value = (np.sum(permuted_loading >= loading_max[i][column])
-                           + np.sum(permuted_loading <= loading_min[i][column]) + 1) / (self.n_outer_permutations + 1)
-                is_significant = not (thresh_min <= reference_loadings[i][column] <= thresh_max)
+                p_value = (np.sum(permuted_loading >= loading_max[column])
+                           + np.sum(permuted_loading <= loading_min[column]) + 1) / (self.n_outer_permutations + 1)
+                is_significant = not (thresh_min <= reference_loadings[column] <= thresh_max)
             return p_value, is_significant
 
         # determine loadings for the features using canonical model
-        estimator = self._get_estimator(Y, n_components)
-        regressors = estimator.regressors_ if isinstance(estimator, OPLSDA) else [estimator]
+        estimator = OPLS(n_components, self.scale)
 
         inside_ptile = self.inner_alpha / 2
         outside_ptile = self.outer_alpha / 2
-        p_values = np.empty((X.shape[1], len(regressors)), dtype=float)
-        significant = np.empty((X.shape[1], len(regressors)), dtype=bool)  # filled with True
 
-        reference_loadings = [np.ravel(reg.fit(X, Y).x_loadings_) for reg in regressors]
+        reference_loadings = np.ravel(estimator.fit(X, y).x_loadings_)
+        loading_max = np.max((reference_loadings, -1 * reference_loadings), axis=0)
+        loading_min = np.min((reference_loadings, -1 * reference_loadings), axis=0)
 
-        loading_max = [
-            np.max((reference_loadings_i, -1 * reference_loadings_i), axis=0)
-            for reference_loadings_i in reference_loadings
-        ]
-        loading_min = [
-            np.min((reference_loadings_i, -1 * reference_loadings_i), axis=0)
-            for reference_loadings_i in reference_loadings
-        ]
-        permuted_loadings = [
-            Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
-                delayed(_get_permuted_loading)(reg, self.n_inner_permutations, i) for i in range(0, X.shape[1]))
-            for reg in regressors
-        ]
+        permuted_loadings = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
+            delayed(_get_permuted_loading)(estimator, self.n_inner_permutations, i) for i in range(0, X.shape[1]))
 
-        for i in range(0, len(regressors)):
-            reg_p_values, reg_significant = zip(*Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
-                delayed(_determine_feature_significance)(i, column) for column in range(0, X.shape[1])))
-            p_values[:, i] = np.array(reg_p_values)
-            significant[:, i] = np.array(reg_significant)
-        return significant, p_values, np.dstack(permuted_loadings).T
+        p_values, significant = zip(*Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
+            delayed(_determine_feature_significance(column) for column in range(0, X.shape[1]))
+        ))
+        return np.hstack(significant), np.hstack(p_values), np.hstack(permuted_loadings)
 
-    def fit(self, X, Y, n_components=None, cv=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
+    def fit(self, X, y, n_components=None, cv=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
         """Evaluate the quality of the OPLS regressor
 
         The q-squared value and a p-value for each feature's significance is determined. The final regressor can be
@@ -359,7 +396,7 @@ class OPLSCrossValidator:
             Training vectors, where n_samples is the number of samples and
             n_features is the number of predictors.
 
-        Y : array-like, shape = [n_samples, 1]
+        y : array-like, shape = [n_samples, 1]
             Target vector, where n_samples is the number of samples.
             This implementation only supports a single response (target) variable.
 
@@ -400,42 +437,50 @@ class OPLSCrossValidator:
                   as in '2*n_jobs'
 
         """
-        def _r2_Y(est: Union[OPLS, OPLSDA], X, y):
-            return est.r2_score()
 
-        def _q2_Y(est: Union[OPLS, OPLSDA], X, y):
-            return est.q2_score(X, y)
+        X = check_array(X, dtype=float, copy=True)
+        y = self._check_target(y)
 
-        n_components = n_components or self.determine_n_components(X, Y)
-        discrimination = self._is_discrimination(Y)
-        cv = cv or self._get_validator(Y)
-        estimator = self._get_estimator(Y, n_components)
-
+        n_components = n_components or self.determine_n_components(X, y)
+        cv = cv or self._get_validator(y)
         # permutation of label to get p-value for r_squared_Y
         self.r_squared_Y_, self.permutation_r_squared_Y_, self.r_squared_Y_p_value_ = permutation_test_score(
-            estimator, X, Y, cv=cv, n_permutations=self.n_permutations, scoring=_r2_Y
+            OPLS(n_components, self.scale), X, y, cv=cv, n_permutations=self.n_permutations, scoring=self._r2_Y,
+            n_jobs=n_jobs, verbose=verbose
         )
 
         # permutation of label to get p-value for q_squared
         self.q_squared_, self.permutation_q_squared_, self.q_squared_p_value_ = permutation_test_score(
-            estimator, X, Y, cv=cv, n_permutations=self.n_permutations, scoring=_q2_Y
+            OPLS(n_components, self.scale), X, y, cv=cv, n_permutations=self.n_permutations, scoring=self._q2_Y,
+            n_jobs=n_jobs, verbose=verbose
         )
 
         # if this is a discrimination problem, get accuracy and the AUC of the ROC
-        if discrimination:
+        if self._is_discrimination(y):
+            (self.discriminator_q_squared_,
+             self.permutation_discriminator_q_squared_,
+             self.discriminator_q_squared_p_value_) = permutation_test_score(
+                OPLS(n_components, self.scale), X, y, cv=cv, scoring=self._q2d_Y, n_permutations=self.n_permutations,
+                n_jobs=n_jobs, verbose=verbose
+            )
             self.accuracy_, self.permutation_accuracy_, self.accuracy_p_value_ = permutation_test_score(
-                estimator, X, Y, cv=cv, scoring='accuracy', n_permutations=self.n_permutations
+                OPLS(n_components, self.scale), X, y, cv=cv, scoring=self._discriminator_accuracy,
+                n_permutations=self.n_permutations, n_jobs=n_jobs, verbose=verbose
             )
             self.roc_auc_, self.permutation_roc_auc_, self.roc_auc_p_value_ = permutation_test_score(
-                estimator, X, Y, cv=cv, scoring='roc_auc', n_permutations=self.n_permutations
+                OPLS(n_components, self.scale), X, y, cv=cv, scoring=self._discriminator_roc_auc,
+                n_permutations=self.n_permutations, n_jobs=n_jobs, verbose=verbose
             )
         else:
+            self.discriminator_q_squared_ = self.permutation_discriminator_q_squared_ = \
+                self.discriminator_q_squared_p_value_ = None
             self.accuracy_ = self.permutation_accuracy_ = self.accuracy_p_value_ = None
             self.roc_auc_ = self.permutation_roc_auc_ = self.roc_auc_p_value_ = None
 
         (self.feature_significance_,
          self.feature_p_values_,
-         self.permuted_loadings_) = self.determine_significant_features(X, Y, n_components)
+         self.permuted_loadings_) = self.determine_significant_features(X, y, n_components,
+                                                                        n_jobs, verbose, pre_dispatch)
 
-        self.estimator_ = self._get_estimator(Y, n_components).fit(X, Y)
+        self.estimator_ = OPLS(n_components, self.scale)
         return self
