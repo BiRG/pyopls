@@ -3,10 +3,9 @@
 # License: MIT
 
 import numpy as np
-from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, ClassifierMixin
-from sklearn.exceptions import NotFittedError
-from sklearn.preprocessing import LabelBinarizer
-from sklearn.utils import check_array, compute_class_weight
+from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin
+from sklearn.metrics import accuracy_score
+from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted, FLOAT_DTYPES
 
 
@@ -90,6 +89,8 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         self.coef_ = None  # B_pls
         self.x_mean_ = None
         self.y_mean_ = None
+        self.y_min_ = None
+        self.y_max_ = None
         self.x_std_ = None
         self.y_std_ = None
         self.sum_sq_X_ = None
@@ -147,6 +148,7 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
                              'Y must be a (n_samples, 1) array-like.')
 
         X_res, Y_res, self.x_mean_, self.y_mean_, self.x_std_, self.y_std_ = self._center_scale_xy(X, Y, self.scale)
+        self.y_min_, self.y_max_ = np.min(Y), np.max(Y)
 
         X_res = np.array(X - np.mean(X, 0))  # mean-center X
         Y_res = np.array(Y - np.mean(Y, 0))  # mean-center Y
@@ -295,98 +297,22 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
             return x_scores, y_scores
         return x_scores
 
-    def _press(self, X, y):
+    def press(self, X, y):
         return np.sum(np.square(y - self.predict(X))).item()
 
+    def pressd(self, X, y):
+        return np.sum(np.square(y - np.clip(self.predict(X), self.y_min_, self.y_max_))).item()
+
     def q2_score(self, X, y):
-        return 1 - (self._press(X, y) / self.sum_sq_Y_)
+        return 1 - (self.press(X, y) / self.sum_sq_Y_)
+
+    def q2d_score(self, X, y):
+        return 1 - (self.pressd(X, y) / self.sum_sq_Y_)
 
     def r2_score(self):
         return self.r_squared_Y_
 
+    def discriminator_accuracy_score(self, X, y):
+        y_pred = np.sign(self.predict(X)).astype(float)
+        return accuracy_score(y, y_pred)
 
-class OPLSDA(BaseEstimator, ClassifierMixin):
-    """Orthogonal Projection to Latent Structures Discriminant Analysis (O-PLS-DA)
-
-    This class implements the O-PLS-DA algorithm for one (and only one) categorical or binary target.
-    For multiclass targets, one OPLS regressor is used per class.
-
-    This method is used for binary y values. It is a special case of a OPLS regressor where the target is a vector of
-    -1 and 1, where 1 and -1 each represent one of the two classes.
-
-    All predictions above 1 and below -1 are considered equally positive or negative for the class, respectively.
-    A softmax function is applied to the clipped values to compute a pseudo-probability as a measure of the regressors'
-    confidence.
-
-    The predict method assigns a class based on which predictor has the highest confidence the data belongs to its class
-    Ties are unlikely but are resolved in favor of the selector with the best r-squared value.
-
-    Parameters
-    ----------
-
-    Attributes
-    ----------
-    regressors_ : List[OPLS]
-        The OPLS regressors for each class
-
-    References
-    ----------
-    J. A. Westerhuis, E. J. J. van Velzen, H. C. J. Hoefsloot and Age K. Smilde. Discriminant Q2 (DQ2) for improved
-    discrimination in PLSDA models. Metabolomics (2008) 4. DOI:
-`   """
-    def __init__(self, n_components=5, scale=True, copy=True):
-        self.n_components = n_components
-        self.scale = scale
-        self.copy = copy
-        self.regressors_ = []
-        self.binarizer_ = None
-        self.class_weights_ = None
-
-    def fit(self, X, Y):
-        self.binarizer_ = LabelBinarizer(neg_label=-1, pos_label=1)
-        binarized = self.binarizer_.fit_transform(Y).astype(float)
-        self.regressors_ = [
-            OPLS(self.n_components, self.scale, self.copy).fit(X, binarized[:, i].reshape(-1, 1)) for i in range(0, binarized.shape[1])
-        ]
-        self.class_weights_ = compute_class_weight('balanced', self.binarizer_.classes_, Y)
-
-    def predict(self, X):
-        probs = self.predict_proba(X)
-        r_squared = np.array([regressor.r_squared_Y_ for regressor in self.regressors_])
-        r_squared_inds = np.argsort(r_squared)
-        best_regressor = [r_squared_inds[i] for i in np.argmax(probs[:, r_squared_inds], axis=1)]  # original column
-        return np.array([self.binarizer_.classes_[i] for i in best_regressor])
-
-    def predict_proba(self, X):
-        if not len(self.regressors_):
-            raise NotFittedError("This %(name)s instance is not fitted yet. Call 'fit' with "
-                                 "appropriate arguments before using this method.")
-        # all values less than -1 are counted as -1, all values greater than 1 counted as 1
-        # this accounts for lower-confidence regressors.
-        return 0.5 * (np.hstack([np.clip(regressor.predict(X), -1, 1) for regressor in self.regressors_]) + 1)
-
-    def predict_log_proba(self, X):
-        return np.log(self.predict_proba(X))
-
-    def _press(self, X, y):
-        # pressd for each regressor
-        binarized = self.binarizer_.transform(y).astype(float)
-        y_pred = np.hstack([np.clip(regressor.predict(X), -1, 1) for regressor in self.regressors_])
-        return np.sum(np.square(binarized - y_pred), axis=0)
-
-    def regressor_q2_score(self, X, y):
-        # the q-squared measure for each individual regressor
-        press = self._press(X, y)
-        sum_sq = np.array([regressor.sum_sq_Y_ for regressor in self.regressors_])
-        return 1 - (press / sum_sq)
-
-    def q2_score(self, X, y):
-        # a q-squared measure of how good all the regressors are together.
-        press = self._press(X, y).sum()
-        sum_sq = sum([regressor.sum_sq_Y_ for regressor in self.regressors_])
-        return 1 - (press / sum_sq)
-
-    def r2_score(self):
-        residual_sum_sq = sum([regressor.residual_sum_sq_Y_ for regressor in self.regressors_])
-        total_sum_sq = sum([regressor.sum_sq_Y_ for regressor in self.regressors_])
-        return 1 - (residual_sum_sq / total_sum_sq)

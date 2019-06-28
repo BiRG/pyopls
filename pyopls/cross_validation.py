@@ -335,12 +335,13 @@ class OPLSCrossValidator:
         X = check_array(X, dtype=float, copy=True)
         y = self._check_target(y)
         # permuted loadings for one feature
-        def _get_permuted_loading(regressor, n_permutations, j):
+
+        def _get_permuted_loading(n_permutations, j):
             loadings = np.empty(n_permutations, dtype=float)
             for i in range(0, n_permutations):
                 X_permuted = np.copy(X)
                 X_permuted[:, j] = np.random.permutation(X[:, j])
-                test_loadings = regressor.fit(X_permuted, y).x_loadings_
+                test_loadings = estimator.fit(X_permuted, y).x_loadings_
                 # make sure direction of vector is the same
                 err1 = np.sum(np.square(test_loadings[:j] - reference_loadings[:j])) \
                        + np.sum(np.square(test_loadings[j:] - reference_loadings[j:]))
@@ -351,37 +352,34 @@ class OPLSCrossValidator:
             return loadings
 
         def _determine_feature_significance(column):
-            thresh_min, thresh_max = np.percentile(permuted_loadings[column], (inside_ptile, 1 - inside_ptile))
-            if thresh_min <= reference_loadings[column] <= thresh_max:
-                p_value = ((np.sum(permuted_loadings[column] >= loading_max[column])
-                            + np.sum(permuted_loadings[column] <= loading_min[column]) + 1)
-                           / (self.n_inner_permutations + 1))
-                is_significant = False
-            else:
+            p_value = ((np.sum(permuted_loadings[column] >= loading_max[column])
+                        + np.sum(permuted_loadings[column] <= loading_min[column]) + 1)
+                       / (self.n_inner_permutations + 1))
+            if p_value < inner_alpha:
                 # perform additional permutations if potentially significant
-                permuted_loading = _get_permuted_loading(estimator, self.n_outer_permutations, column)
-                thresh_min, thresh_max = np.percentile(permuted_loading, (outside_ptile, 1 - outside_ptile))
+                permuted_loading = _get_permuted_loading(self.n_outer_permutations, column)
                 p_value = (np.sum(permuted_loading >= loading_max[column])
                            + np.sum(permuted_loading <= loading_min[column]) + 1) / (self.n_outer_permutations + 1)
-                is_significant = not (thresh_min <= reference_loadings[column] <= thresh_max)
-            return p_value, is_significant
+            return p_value
 
         # determine loadings for the features using canonical model
         estimator = OPLS(n_components, self.scale)
 
-        inside_ptile = self.inner_alpha / 2
-        outside_ptile = self.outer_alpha / 2
+        inner_alpha = self.inner_alpha / 2
+        outside_alpha = self.outer_alpha / 2
 
         reference_loadings = np.ravel(estimator.fit(X, y).x_loadings_)
         loading_max = np.max((reference_loadings, -1 * reference_loadings), axis=0)
         loading_min = np.min((reference_loadings, -1 * reference_loadings), axis=0)
 
         permuted_loadings = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
-            delayed(_get_permuted_loading)(estimator, self.n_inner_permutations, i) for i in range(0, X.shape[1]))
+            delayed(_get_permuted_loading)(self.n_inner_permutations, i) for i in range(X.shape[1]))
 
-        p_values, significant = zip(*Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
-            delayed(_determine_feature_significance(column) for column in range(0, X.shape[1]))
-        ))
+        p_values = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
+            delayed(_determine_feature_significance)(i) for i in range(X.shape[1]))
+
+        significant = [p_value < outside_alpha for p_value in p_values]
+
         return np.hstack(significant), np.hstack(p_values), np.hstack(permuted_loadings)
 
     def fit(self, X, y, n_components=None, cv=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
@@ -441,17 +439,17 @@ class OPLSCrossValidator:
         X = check_array(X, dtype=float, copy=True)
         y = self._check_target(y)
 
-        n_components = n_components or self.determine_n_components(X, y)
+        self.n_components_ = n_components or self.determine_n_components(X, y)
         cv = cv or self._get_validator(y)
         # permutation of label to get p-value for r_squared_Y
         self.r_squared_Y_, self.permutation_r_squared_Y_, self.r_squared_Y_p_value_ = permutation_test_score(
-            OPLS(n_components, self.scale), X, y, cv=cv, n_permutations=self.n_permutations, scoring=self._r2_Y,
+            OPLS(self.n_components_, self.scale), X, y, cv=cv, n_permutations=self.n_permutations, scoring=self._r2_Y,
             n_jobs=n_jobs, verbose=verbose
         )
 
         # permutation of label to get p-value for q_squared
         self.q_squared_, self.permutation_q_squared_, self.q_squared_p_value_ = permutation_test_score(
-            OPLS(n_components, self.scale), X, y, cv=cv, n_permutations=self.n_permutations, scoring=self._q2_Y,
+            OPLS(self.n_components_, self.scale), X, y, cv=cv, n_permutations=self.n_permutations, scoring=self._q2_Y,
             n_jobs=n_jobs, verbose=verbose
         )
 
@@ -460,15 +458,15 @@ class OPLSCrossValidator:
             (self.discriminator_q_squared_,
              self.permutation_discriminator_q_squared_,
              self.discriminator_q_squared_p_value_) = permutation_test_score(
-                OPLS(n_components, self.scale), X, y, cv=cv, scoring=self._q2d_Y, n_permutations=self.n_permutations,
+                OPLS(self.n_components_, self.scale), X, y, cv=cv, scoring=self._q2d_Y, n_permutations=self.n_permutations,
                 n_jobs=n_jobs, verbose=verbose
             )
             self.accuracy_, self.permutation_accuracy_, self.accuracy_p_value_ = permutation_test_score(
-                OPLS(n_components, self.scale), X, y, cv=cv, scoring=self._discriminator_accuracy,
+                OPLS(self.n_components_, self.scale), X, y, cv=cv, scoring=self._discriminator_accuracy,
                 n_permutations=self.n_permutations, n_jobs=n_jobs, verbose=verbose
             )
             self.roc_auc_, self.permutation_roc_auc_, self.roc_auc_p_value_ = permutation_test_score(
-                OPLS(n_components, self.scale), X, y, cv=cv, scoring=self._discriminator_roc_auc,
+                OPLS(self.n_components_, self.scale), X, y, cv=cv, scoring=self._discriminator_roc_auc,
                 n_permutations=self.n_permutations, n_jobs=n_jobs, verbose=verbose
             )
         else:
@@ -479,7 +477,7 @@ class OPLSCrossValidator:
 
         (self.feature_significance_,
          self.feature_p_values_,
-         self.permuted_loadings_) = self.determine_significant_features(X, y, n_components,
+         self.permuted_loadings_) = self.determine_significant_features(X, y, self.n_components_,
                                                                         n_jobs, verbose, pre_dispatch)
 
         self.estimator_ = OPLS(n_components, self.scale)
