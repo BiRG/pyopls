@@ -2,9 +2,9 @@ import numpy as np
 from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, cross_val_score, permutation_test_score
 from sklearn.preprocessing import LabelBinarizer
-from sklearn.utils.multiclass import type_of_target
-from sklearn.utils._joblib import Parallel, delayed
 from sklearn.utils import check_array
+from sklearn.utils._joblib import Parallel, delayed
+from sklearn.utils.multiclass import type_of_target
 
 from .opls import OPLS
 
