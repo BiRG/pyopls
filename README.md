@@ -28,19 +28,21 @@ estimator.fit(X_train, y_train)
 y_pred = estimator.predict(X_test)
 ```
 ### Fit a discriminator (O-PLS-DA)
-The `OPLSDA` class is a subclass of `OPLS` designed to facilitate O-PLS-DA. Categorical variables will be
-binarized. If there is more than one category, only one category can be targeted at a time. The value for this category 
-should be proved as `target_label`. In this example, we have three categories in `y`, 'a', 'b' and 'c' and we want to 
-descriminate 'a' from the other two. The `predict_proba` and `predict_log_proba` predict the probability and log-probability
-respectively that the records belong to each of the two classes. This is done by applying a softmax function to the 
-values predicted by the regressor.
+You can pass data binarized to (-1, 1) to perform OPLS-DA. The `predict_proba` method can be used to find the probability
+that the samples belong to the positive class. `q2d_score` can be used in place of `q2_score`, and 
+`discriminator_accuracy_score` can be used to evaluate the ability of the discriminator to separate the two classes.
 
 #### Example
 ```pythonstub
-from pyopls import OPLSDiscriminator
-estimator = OPLSDA(5, target_label='a')
-estimator.fit(X_train, y_train)
-probs = estimator.predict_proba(X_test)
+from pyopls import OPLS
+from sklearn.preprocessing import LabelBinarizer
+binarizer = LabelBinarizer(-1, 1)
+binarizer.fit(y_train)
+estimator = OPLS(5)
+estimator.fit(X_train, binarizer.transform(y_train)[:, 0].astype(float).reshape(-1, 1))
+y_pred = estimator.predict_proba(X_test)  # get probability of membership in positive class
+predicted = binarizer.inverse_transform(estimator.predict(X_test))  # get class labels
+accuracy = estimator.discriminator_accuracy_score(X_train, y_train)
 ```
 
 ### Filter orthogonal components from `X`
@@ -61,7 +63,7 @@ y_pred = sv_regressor.predict(X_test_train)
 ```
 
 ## Cross-validation and Feature Importance
-The `fit()` method of the `OPLSCrossValidator` class can be used to evaluate the quality of the OPLS model.
+The `fit()` method of the `OPLSValidator` class can be used to evaluate the quality of the OPLS model.
 Unless specified as the `cv` parameter, a cross-validator is selected based on the values of the target variable. 
 If the target is binary or multiclass, `sklearn.model_selection.StratifiedKFold` is used, otherwise 
 `sklearn.model_selection.KFold` is used unless k=-1, then `sklearn.model_selection.LeaveOneOut` is used.
@@ -70,7 +72,7 @@ If the target is binary or multiclass, `sklearn.model_selection.StratifiedKFold`
 The ideal number of components is determined by creating OPLS models at each number of components from `min_n_components`
 until the q-squared value does not increase. The q-squared value is determined by k-fold cross-validation.
 
-This can be performed by calling `OPLSCrossValidator.determine_n_components()`
+This can be performed by calling `OPLSValidator.determine_n_components()`
 
 ### Coefficient of determination
 The overall quality of the fit is measured using the q-squared metric for the k-fold cross-validated data, where
@@ -86,12 +88,12 @@ the loading's values, an additional 500 permutations are performed to get a more
 as the proportion of loadings which fall within the (-p, p) range where p is the canonical loading, as it is 
 in `sklearn.feature_selection.permutation_test_score`.
 
-This can be performed by calling `OPLSCrossValidator.determine_significant_features()`.
+This can be performed by calling `OPLSValidator.determine_significant_features()`.
 
 #### Example
 ```pythonstub
-from pyopls import OPLSCrossValidator
-opls_cv = OPLSCrossValidator()  # k = -1 for leave-one-out
+from pyopls import OPLSValidator
+opls_cv = OPLSValidator()  # k = -1 for leave-one-out
 opls_cv.fit(X, y)  # test-train split is automatic
 opls_cv.n_components_  # number of components removed
 opls_cv.q_squared_  # r-squared value of the regression for all left-out parts of data
@@ -99,7 +101,6 @@ opls_cv.q_squared_p_value_  # p-value of q-squared
 opls_cv.feature_p_values_  # p-values for significance of features
 opls_cv.loadings_  # loadings for X of the one-component PLS model.
 opls_cv.estimator_  # the OPLS object 
-
 ```
 
 ## Notes
@@ -109,4 +110,6 @@ opls_cv.estimator_  # the OPLS object
    *J. Chemometrics* 2002; 16: 119-128. DOI: [10.1002/cem.695](https://dx.doi.org/10.1002/cem.695)
 2. Eugene Edington and Patrick Onghena. "Calculating P-Values" in *Randomization tests*, 4th edition.
    New York: Chapman & Hall/CRC, 2007, pp. 33-53. DOI: [10.1201/9781420011814](https://doi.org/10.1201/9781420011814).
-   
+3. Johan A. Westerhuis, Ewoud J. J. van Velzen, Huub C. J. Hoefsloot, Age K. Smilde. Discriminant Q-squared for 
+   improved discrimination in PLSDA models. *Metabolomics* 2008; 4: 293-296. 
+   DOI: [10.1007/s11306-008-0126-2](https://doi.org/10.1007/s11306-008-0126-2)

@@ -1,5 +1,5 @@
 import numpy as np
-from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
 from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, cross_val_score, permutation_test_score
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.utils import check_array
@@ -9,8 +9,8 @@ from sklearn.utils.multiclass import type_of_target
 from .opls import OPLS
 
 
-class OPLSCrossValidator:
-    """Cross Validation of Orthogonal Projection to Latent Structures (O-PLS)
+class OPLSValidator:
+    """Cross Validation and Diagnostics of Orthogonal Projection to Latent Structures (O-PLS)
 
     This class implements the O-PLS algorithm for one (and only one) response as described by [Trygg 2002].
     This is based on the MATLAB implementation by Paul E. Anderson (https://github.com/Anderson-Lab/OPLS).
@@ -64,7 +64,7 @@ class OPLSCrossValidator:
         An estimated p-value for the significance of the feature, defined as the ratio of loading values inside (-p,p)
         where p is the loading for non-permuted data.
 
-    permuted_loadings_ : array [n_inner_permutations, n_features]
+    permutation_loadings_ : array [n_inner_permutations, n_features]
         Values for the loadings for the permuted data.
 
     loadings_ : array [n_features]
@@ -119,7 +119,7 @@ class OPLSCrossValidator:
         self.discriminator_q_squared_p_value_ = None
         self.permutation_discriminator_q_squared_ = None
 
-        self.permuted_loadings_ = None
+        self.permutation_loadings_ = None
         self.estimator_ = None
         self.loadings_ = None
         self.binarizer_ = None
@@ -133,11 +133,11 @@ class OPLSCrossValidator:
             else:
                 return KFold(self.k)
 
-    def _is_discrimination(self, Y):
+    def is_discrimination(self, Y):
         return type_of_target(Y).startswith('binary') and not self.force_regression
 
     def _get_scoring(self, Y):
-        return self._neg_pressd if self._is_discrimination(Y) else self._neg_press
+        return self._neg_pressd if self.is_discrimination(Y) else self._neg_press
 
     def _get_estimator(self, Y, n_components):
         return OPLS(n_components, self.scale)
@@ -149,20 +149,20 @@ class OPLSCrossValidator:
                                       n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch))
 
     @staticmethod
-    def _r2_Y(est: OPLS, X, y):
-        return est.r2_score()
+    def _r2_Y(estimator: OPLS, X, y):
+        return estimator.r2_score()
 
     @staticmethod
-    def _q2_Y(est: OPLS, X, y):
-        return est.q2_score(X, y)
+    def _q2_Y(estimator: OPLS, X, y):
+        return estimator.q2_score(X, y)
 
     @staticmethod
-    def _q2d_Y(est: OPLS, X, y):
-        return est.q2d_score(X, y)
+    def _q2d_Y(estimator: OPLS, X, y):
+        return estimator.q2d_score(X, y)
 
     @staticmethod
-    def _neg_press(est: OPLS, X, y):
-        return -1 * est.press(X, y)
+    def _neg_press(estimator: OPLS, X, y):
+        return -1 * estimator.press(X, y)
 
     @staticmethod
     def _neg_pressd(est: OPLS, X, y):
@@ -187,7 +187,7 @@ class OPLSCrossValidator:
         if type_of_target(y).startswith('multiclass') and not self.force_regression:
             raise ValueError('Multiclass input not directly supported. '
                              'Try binarizing with sklearn.preprocessing.LabelBinarizer.')
-        if self._is_discrimination(y):
+        if self.is_discrimination(y):
             y = self._process_binary_target(y)
         else:
             self.binarizer_ = None
@@ -380,7 +380,7 @@ class OPLSCrossValidator:
 
         significant = [p_value < outside_alpha for p_value in p_values]
 
-        return np.hstack(significant), np.hstack(p_values), np.hstack(permuted_loadings)
+        return np.hstack(significant), np.hstack(p_values), np.vstack(permuted_loadings).T
 
     def fit(self, X, y, n_components=None, cv=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
         """Evaluate the quality of the OPLS regressor
@@ -454,7 +454,7 @@ class OPLSCrossValidator:
         )
 
         # if this is a discrimination problem, get accuracy and the AUC of the ROC
-        if self._is_discrimination(y):
+        if self.is_discrimination(y):
             (self.discriminator_q_squared_,
              self.permutation_discriminator_q_squared_,
              self.discriminator_q_squared_p_value_) = permutation_test_score(
@@ -477,8 +477,13 @@ class OPLSCrossValidator:
 
         (self.feature_significance_,
          self.feature_p_values_,
-         self.permuted_loadings_) = self.determine_significant_features(X, y, self.n_components_,
-                                                                        n_jobs, verbose, pre_dispatch)
+         self.permutation_loadings_) = self.determine_significant_features(X, y, self.n_components_,
+                                                                           n_jobs, verbose, pre_dispatch)
 
         self.estimator_ = OPLS(n_components, self.scale)
         return self
+
+    @staticmethod
+    def discriminator_roc(estimator: OPLS, X, y):
+        y_score = 0.5 * (np.clip(estimator.predict(X), -1, 1) + 1)
+        return roc_curve(y, y_score)

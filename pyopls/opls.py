@@ -242,6 +242,18 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         z = self.transform(X)
         return np.dot(z, self.coef_) + self.y_mean_
 
+    def predict_proba(self, X):
+        """Predict a probability if this is OPLS-DA (results will not make sense otherwise).
+
+        Parameters
+        ----------
+        X : array-like, shape = [n_samples, n_features]
+            Training or test vectors, where n_samples is the number of samples and
+            n_features is the number of predictors (which should be the same predictors the model was trained on).
+        """
+        y_pred = self.predict(X)
+        return 0.5 * np.clip(y_pred, -1, 1) + 1
+
     def fit_transform(self, X, y=None, **fit_params):
         """ Learn and apply the filtering on the training data and get the filtered X
 
