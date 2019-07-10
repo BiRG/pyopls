@@ -101,12 +101,18 @@ class OPLSValidator:
         self.n_components_ = None
         self.feature_significance_ = None
         self.feature_p_values_ = None
+
         self.q_squared_ = None
         self.permutation_q_squared_ = None
         self.q_squared_p_value_ = None
         self.r_squared_Y_ = None
         self.permutation_r_squared_Y_ = None
         self.r_squared_Y_p_value_ = None
+
+        self.r_squared_X_ = None
+        self.permutation_r_squared_X_ = None
+        self.r_squared_X_p_value_ = None
+
 
         self.accuracy_ = None
         self.permutation_accuracy_ = None
@@ -150,7 +156,11 @@ class OPLSValidator:
 
     @staticmethod
     def _r2_Y(estimator: OPLS, X, y):
-        return estimator.r2_score()
+        return estimator.r_squared_Y_
+
+    @staticmethod
+    def _r2_X(estimator: OPLS, X, y):
+        return estimator.r_squared_X_
 
     @staticmethod
     def _q2_Y(estimator: OPLS, X, y):
@@ -441,9 +451,16 @@ class OPLSValidator:
 
         self.n_components_ = n_components or self.determine_n_components(X, y)
         cv = cv or self._get_validator(y)
+
         # permutation of label to get p-value for r_squared_Y
         self.r_squared_Y_, self.permutation_r_squared_Y_, self.r_squared_Y_p_value_ = permutation_test_score(
             OPLS(self.n_components_, self.scale), X, y, cv=cv, n_permutations=self.n_permutations, scoring=self._r2_Y,
+            n_jobs=n_jobs, verbose=verbose
+        )
+
+        # permutation of label to get p-value for r_squared_X
+        self.r_squared_X_, self.permutation_r_squared_X_, self.r_squared_X_p_value_ = permutation_test_score(
+            OPLS(self.n_components_, self.scale), X, y, cv=cv, n_permutations=self.n_permutations, scoring=self._r2_X,
             n_jobs=n_jobs, verbose=verbose
         )
 

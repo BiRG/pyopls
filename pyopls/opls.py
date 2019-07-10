@@ -321,9 +321,6 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
     def q2d_score(self, X, y):
         return 1 - (self.pressd(X, y) / self.sum_sq_Y_)
 
-    def r2_score(self):
-        return self.r_squared_Y_
-
     def discriminator_accuracy_score(self, X, y):
         y_pred = np.sign(self.predict(X)).astype(float)
         return accuracy_score(y, y_pred)
