@@ -88,7 +88,7 @@ the loading's values, an additional 500 permutations are performed to get a more
 as the proportion of loadings which fall within the (-p, p) range where p is the canonical loading, as it is 
 in `sklearn.feature_selection.permutation_test_score`.
 
-This can be performed by calling `OPLSValidator.determine_significant_features()`.
+This can be performed by calling `OPLSValidator.determine_significant_features()`, which is also called by `fit()`.
 
 #### Example
 ```pythonstub

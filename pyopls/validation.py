@@ -1,4 +1,5 @@
 import numpy as np
+from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, ClassifierMixin
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
 from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, cross_val_score, permutation_test_score
 from sklearn.preprocessing import LabelBinarizer
@@ -9,7 +10,7 @@ from sklearn.utils.multiclass import type_of_target
 from .opls import OPLS
 
 
-class OPLSValidator:
+class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
     """Cross Validation and Diagnostics of Orthogonal Projection to Latent Structures (O-PLS)
 
     This class implements the O-PLS algorithm for one (and only one) response as described by [Trygg 2002].
@@ -113,7 +114,6 @@ class OPLSValidator:
         self.permutation_r_squared_X_ = None
         self.r_squared_X_p_value_ = None
 
-
         self.accuracy_ = None
         self.permutation_accuracy_ = None
         self.accuracy_p_value_ = None
@@ -193,7 +193,7 @@ class OPLSValidator:
         return self.binarizer_.fit_transform(y).astype(float)
 
     def _check_target(self, y):
-        y = check_array(y, dtype=None, copy=True)
+        y = check_array(y, dtype=None, copy=True, ensure_2d=False).reshape(-1, 1)
         if type_of_target(y).startswith('multiclass') and not self.force_regression:
             raise ValueError('Multiclass input not directly supported. '
                              'Try binarizing with sklearn.preprocessing.LabelBinarizer.')
@@ -497,10 +497,50 @@ class OPLSValidator:
          self.permutation_loadings_) = self.determine_significant_features(X, y, self.n_components_,
                                                                            n_jobs, verbose, pre_dispatch)
 
-        self.estimator_ = OPLS(n_components, self.scale)
+        self.estimator_ = OPLS(self.n_components_, self.scale).fit(X, y)
         return self
+
+    def transform(self, X):
+        return self.estimator_.transform(X)
+
+    def predict(self, X):
+        return self.estimator_.predict(X)
+
+    def predict_proba(self, X):
+        return self.estimator_.predict_proba(X)
+
+    def score(self, X, y, sample_weight=None):
+        return self.estimator_.q2_score(X, y)
 
     @staticmethod
     def discriminator_roc(estimator: OPLS, X, y):
-        y_score = 0.5 * (np.clip(estimator.predict(X), -1, 1) + 1)
-        return roc_curve(y, y_score)
+        return roc_curve(y, estimator.predict_proba(X))
+
+
+class OPLSDAValidator(OPLSValidator, ClassifierMixin):
+    def __init__(self,
+                 min_n_components=1,
+                 k=10,
+                 scale=True,
+                 force_regression=False,
+                 n_permutations=100,
+                 n_inner_permutations=100,
+                 n_outer_permutations=500,
+                 inner_alpha=0.2,
+                 outer_alpha=0.01):
+        super().__init__(min_n_components,
+                         k,
+                         scale,
+                         force_regression,
+                         n_permutations,
+                         n_inner_permutations,
+                         n_outer_permutations,
+                         inner_alpha,
+                         outer_alpha)
+
+    def score(self, X, y, sample_weight=None):
+        return self.estimator_.discriminator_accuracy_score(X, y)
+
+    def predict(self, X):
+        values = np.sign(self.estimator_.predict(X))
+        return self.binarizer_.inverse_transform(values).reshape(-1, 1)

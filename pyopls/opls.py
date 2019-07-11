@@ -219,7 +219,7 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         z = X - X.mean(axis=0)
 
         # filter out orthogonal components of X
-        for f in range(0, self.n_components):
+        for f in range(self.n_components):
             z = (z - (z @ self.orthogonal_x_weights_[:, f][:, np.newaxis] /
                       (self.orthogonal_x_weights_[:, f].T @ self.orthogonal_x_weights_[:, f]))
                  @ self.orthogonal_x_loadings_[:, f][np.newaxis, :])
