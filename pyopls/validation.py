@@ -512,9 +512,8 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
     def score(self, X, y, sample_weight=None):
         return self.estimator_.q2_score(X, y)
 
-    @staticmethod
-    def discriminator_roc(estimator: OPLS, X, y):
-        return roc_curve(y, estimator.predict_proba(X))
+    def discriminator_roc(self, X, y):
+        return roc_curve(y, self.estimator_.predict_proba(X))
 
 
 class OPLSDAValidator(OPLSValidator, ClassifierMixin):
