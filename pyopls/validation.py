@@ -463,7 +463,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         """
 
         X = check_array(X, dtype=float, copy=True)
-        y = self._check_target(y)
+        y = self._check_target(y, pos_label)
 
         self.n_components_ = n_components or self._determine_n_components(X, y)
         cv = cv or self._get_validator(y, self.k)
