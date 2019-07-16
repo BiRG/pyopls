@@ -6,6 +6,7 @@ from sklearn.preprocessing import LabelBinarizer
 from sklearn.utils import check_array
 from sklearn.utils._joblib import Parallel, delayed
 from sklearn.utils.multiclass import type_of_target
+from sklearn.utils.validation import check_is_fitted
 
 from .opls import OPLS
 
@@ -130,14 +131,15 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         self.loadings_ = None
         self.binarizer_ = None
 
-    def _get_validator(self, Y):
-        if self.k == -1:
+    @staticmethod
+    def _get_validator(Y, k):
+        if k == -1:
             return LeaveOneOut()
         else:
             if type_of_target(Y) in ('binary', 'multiclass'):
-                return StratifiedKFold(self.k)
+                return StratifiedKFold(k)
             else:
-                return KFold(self.k)
+                return KFold(k)
 
     def is_discrimination(self, Y):
         return type_of_target(Y).startswith('binary') and not self.force_regression
@@ -149,7 +151,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         return OPLS(n_components, self.scale)
 
     def _validate(self, X, Y, n_components, scoring, cv=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
-        cv = cv or self._get_validator(Y)
+        cv = cv or self._get_validator(Y, self.k)
         return np.sum(cross_val_score(OPLS(n_components, self.scale),
                                       X, Y, scoring=scoring, cv=cv,
                                       n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch))
@@ -188,22 +190,25 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         y_score = 0.5 * (np.clip(est.predict(X), -1, 1) + 1)
         return roc_auc_score(y, y_score)
 
-    def _process_binary_target(self, y):
+    def _process_binary_target(self, y, pos_label=None):
         self.binarizer_ = LabelBinarizer(-1, 1)
-        return self.binarizer_.fit_transform(y).astype(float)
+        self.binarizer_.fit(y)
+        if pos_label is not None and self.binarizer_.transform([pos_label])[0] == -1:
+            self.binarizer_.classes_ = np.flip(self.binarizer_.classes_)
+        return self.binarizer_.transform(y).astype(float)
 
-    def _check_target(self, y):
+    def _check_target(self, y, pos_label=None):
         y = check_array(y, dtype=None, copy=True, ensure_2d=False).reshape(-1, 1)
         if type_of_target(y).startswith('multiclass') and not self.force_regression:
             raise ValueError('Multiclass input not directly supported. '
                              'Try binarizing with sklearn.preprocessing.LabelBinarizer.')
         if self.is_discrimination(y):
-            y = self._process_binary_target(y)
+            y = self._process_binary_target(y, pos_label)
         else:
             self.binarizer_ = None
         return y
 
-    def determine_n_components(self, X, y, cv=None, scoring=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
+    def _determine_n_components(self, X, y, cv=None, scoring=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
         """Determine number of orthogonal components to remove.
 
         Orthogonal components are removed until removing a component does not improve the performance
@@ -259,9 +264,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
             The number of components to remove to maximize q-squared
 
         """
-        X = check_array(X, dtype=float, copy=True)
-        y = self._check_target(y)
-        cv = cv or self._get_validator(y)
+        cv = cv or self._get_validator(y, self.k)
         scoring = scoring or self._get_scoring(y)
         n_components = self.min_n_components
 
@@ -275,13 +278,13 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
                 n_components += 1
         return n_components
 
-    def determine_significant_features(self,
-                                       X,
-                                       y,
-                                       n_components,
-                                       n_jobs=None,
-                                       verbose=0,
-                                       pre_dispatch='2*n_jobs'):
+    def _determine_significant_features(self,
+                                        X,
+                                        y,
+                                        n_components,
+                                        n_jobs=None,
+                                        verbose=0,
+                                        pre_dispatch='2*n_jobs'):
         """Determine the significance of each feature
 
         This is done by permuting each feature in X and measuring the loading.
@@ -342,10 +345,8 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         permuted_loadings: array [n_regressors, n_inner_permutations, n_features]
             The one-component PLS loadings for each permutation
         """
-        X = check_array(X, dtype=float, copy=True)
-        y = self._check_target(y)
-        # permuted loadings for one feature
 
+        # permuted loadings for one feature
         def _get_permuted_loading(n_permutations, j):
             loadings = np.empty(n_permutations, dtype=float)
             for i in range(0, n_permutations):
@@ -392,11 +393,26 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
 
         return np.hstack(significant), np.hstack(p_values), np.vstack(permuted_loadings).T
 
-    def fit(self, X, y, n_components=None, cv=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
+    def cross_val_roc_curve(self, X, y, cv=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
+        def _get_roc(train_inds, test_inds):
+            probs = self.estimator_.fit(X[train_inds], target[train_inds]).predict_proba(X[test_inds])
+            return roc_curve(target[test_inds], probs)
+
+        X = check_array(X, dtype=float, copy=True)
+        y = check_array(y, dtype=None, copy=True, ensure_2d=False).reshape(-1, 1)
+        cv = cv or StratifiedKFold(self.k)
+        check_is_fitted(self, ['estimator_', 'binarizer_'])
+        target = self.binarizer_.transform(y).astype(float)
+        results = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
+            delayed(_get_roc)(train, test) for train, test in cv.split(X, y)
+        )
+        return [result[0] for result in results], [result[1] for result in results], [result[2] for result in results]
+
+    def fit(self, X, y, n_components=None, cv=None, pos_label=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
         """Evaluate the quality of the OPLS regressor
 
         The q-squared value and a p-value for each feature's significance is determined. The final regressor can be
-        access as estimator_.
+        accessed as estimator_.
 
         Parameters
         ----------
@@ -449,8 +465,8 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         X = check_array(X, dtype=float, copy=True)
         y = self._check_target(y)
 
-        self.n_components_ = n_components or self.determine_n_components(X, y)
-        cv = cv or self._get_validator(y)
+        self.n_components_ = n_components or self._determine_n_components(X, y)
+        cv = cv or self._get_validator(y, self.k)
 
         # permutation of label to get p-value for r_squared_Y
         self.r_squared_Y_, self.permutation_r_squared_Y_, self.r_squared_Y_p_value_ = permutation_test_score(
@@ -470,7 +486,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
             n_jobs=n_jobs, verbose=verbose
         )
 
-        # if this is a discrimination problem, get accuracy and the AUC of the ROC
+        # if this is a discrimination problem, get accuracy and the AUC of the ROC and the ROC itself
         if self.is_discrimination(y):
             (self.discriminator_q_squared_,
              self.permutation_discriminator_q_squared_,
@@ -494,8 +510,8 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
 
         (self.feature_significance_,
          self.feature_p_values_,
-         self.permutation_loadings_) = self.determine_significant_features(X, y, self.n_components_,
-                                                                           n_jobs, verbose, pre_dispatch)
+         self.permutation_loadings_) = self._determine_significant_features(X, y, self.n_components_,
+                                                                            n_jobs, verbose, pre_dispatch)
 
         self.estimator_ = OPLS(self.n_components_, self.scale).fit(X, y)
         return self
