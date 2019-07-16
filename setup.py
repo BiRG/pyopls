@@ -5,7 +5,7 @@ with open('README.md', 'r') as fh:
 
 setuptools.setup(
     name='pyopls',
-    version='19.06',
+    version='19.07',
     author='BiRG @ Wright State University',
     author_email='foose.3@wright.edu',
     description='Orthogonal Projection to Latent Structures',
