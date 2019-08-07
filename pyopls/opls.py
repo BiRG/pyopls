@@ -4,7 +4,7 @@
 
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, r2_score
 from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted, FLOAT_DTYPES
 
@@ -315,11 +315,13 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
     def pressd(self, X, y):
         return np.sum(np.square(y - np.clip(self.predict(X), self.y_min_, self.y_max_))).item()
 
-    def q2_score(self, X, y):
-        return 1 - (self.press(X, y) / self.sum_sq_Y_)
-
-    def q2d_score(self, X, y):
-        return 1 - (self.pressd(X, y) / self.sum_sq_Y_)
+    def r2d_score(self, X, y, sample_weight=None):
+        """
+        Notes
+        -----
+        This is a q-squared score when you provide X and y that were not used to train the estimator.
+        """
+        return r2_score(y, np.clip(self.predict(X), -1, 1), sample_weight)
 
     def discriminator_accuracy_score(self, X, y):
         y_pred = np.sign(self.predict(X)).astype(float)

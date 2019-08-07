@@ -4,7 +4,7 @@ from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
 from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, cross_val_score, permutation_test_score
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.utils import check_array
-from sklearn.utils._joblib import Parallel, delayed
+from sklearn.externals.joblib import Parallel, delayed
 from sklearn.utils.multiclass import type_of_target
 from sklearn.utils.validation import check_is_fitted
 
@@ -147,9 +147,6 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
     def _get_scoring(self, Y):
         return self._neg_pressd if self.is_discrimination(Y) else self._neg_press
 
-    def _get_estimator(self, Y, n_components):
-        return OPLS(n_components, self.scale)
-
     def _validate(self, X, Y, n_components, scoring, cv=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
         cv = cv or self._get_validator(Y, self.k)
         return np.sum(cross_val_score(OPLS(n_components, self.scale),
@@ -166,11 +163,11 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
 
     @staticmethod
     def _q2_Y(estimator: OPLS, X, y):
-        return estimator.q2_score(X, y)
+        return estimator.score(X, y)
 
     @staticmethod
     def _q2d_Y(estimator: OPLS, X, y):
-        return estimator.q2d_score(X, y)
+        return estimator.r2d_score(X, y)
 
     @staticmethod
     def _neg_press(estimator: OPLS, X, y):
