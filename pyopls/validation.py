@@ -2,13 +2,14 @@ import numpy as np
 from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, ClassifierMixin
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
-from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, cross_val_score, permutation_test_score
+from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, cross_val_score
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.utils import check_array
 from sklearn.utils.multiclass import type_of_target
 from sklearn.utils.validation import check_is_fitted
 
 from .opls import OPLS
+from .permutation_test import permutation_test_score
 
 
 class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
@@ -430,6 +431,9 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
             If target is binary or multiclass, sklearn.model_selection.StratifiedKFold is used, otherwise
             sklearn.model_selection.KFold is used unless k=-1, then sklearn.model_selection.LeaveOneOut is used.
 
+        pos_label : string
+            If this is a discrimination problem, the value of the target corresponding to "1".
+
         n_jobs : int or None, optional (default=None)
             The number of CPUs to use to do the computation.
             ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
@@ -462,49 +466,43 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         X = check_array(X, dtype=float, copy=True)
         y = self._check_target(y, pos_label)
 
+        if not n_components:
+            if verbose:
+                print('Determining number of components to remove.')
+            n_components = self._determine_n_components(X, y)
+
         self.n_components_ = n_components or self._determine_n_components(X, y)
         cv = cv or self._get_validator(y, self.k)
 
-        # permutation of label to get p-value for r_squared_Y
-        self.r_squared_Y_, self.permutation_r_squared_Y_, self.r_squared_Y_p_value_ = permutation_test_score(
-            OPLS(self.n_components_, self.scale), X, y, cv=cv, n_permutations=self.n_permutations, scoring=self._r2_Y,
-            n_jobs=n_jobs, verbose=verbose
-        )
-
-        # permutation of label to get p-value for r_squared_X
-        self.r_squared_X_, self.permutation_r_squared_X_, self.r_squared_X_p_value_ = permutation_test_score(
-            OPLS(self.n_components_, self.scale), X, y, cv=cv, n_permutations=self.n_permutations, scoring=self._r2_X,
-            n_jobs=n_jobs, verbose=verbose
-        )
-
-        # permutation of label to get p-value for q_squared
-        self.q_squared_, self.permutation_q_squared_, self.q_squared_p_value_ = permutation_test_score(
-            OPLS(self.n_components_, self.scale), X, y, cv=cv, n_permutations=self.n_permutations, scoring=self._q2_Y,
-            n_jobs=n_jobs, verbose=verbose
-        )
-
-        # if this is a discrimination problem, get accuracy and the AUC of the ROC and the ROC itself
+        scorers = [self._r2_Y, self._r2_X, self._q2_Y]
         if self.is_discrimination(y):
-            (self.discriminator_q_squared_,
-             self.permutation_discriminator_q_squared_,
-             self.discriminator_q_squared_p_value_) = permutation_test_score(
-                OPLS(self.n_components_, self.scale), X, y, cv=cv, scoring=self._q2d_Y, n_permutations=self.n_permutations,
-                n_jobs=n_jobs, verbose=verbose
-            )
-            self.accuracy_, self.permutation_accuracy_, self.accuracy_p_value_ = permutation_test_score(
-                OPLS(self.n_components_, self.scale), X, y, cv=cv, scoring=self._discriminator_accuracy,
-                n_permutations=self.n_permutations, n_jobs=n_jobs, verbose=verbose
-            )
-            self.roc_auc_, self.permutation_roc_auc_, self.roc_auc_p_value_ = permutation_test_score(
-                OPLS(self.n_components_, self.scale), X, y, cv=cv, scoring=self._discriminator_roc_auc,
-                n_permutations=self.n_permutations, n_jobs=n_jobs, verbose=verbose
-            )
-        else:
-            self.discriminator_q_squared_ = self.permutation_discriminator_q_squared_ = \
-                self.discriminator_q_squared_p_value_ = None
-            self.accuracy_ = self.permutation_accuracy_ = self.accuracy_p_value_ = None
-            self.roc_auc_ = self.permutation_roc_auc_ = self.roc_auc_p_value_ = None
+            scorers += [self._q2d_Y, self._discriminator_accuracy, self._discriminator_roc_auc]
 
+        if verbose:
+            print('Validating metrics.')
+
+        results = permutation_test_score(OPLS(self.n_components_, self.scale), X, y, cv=cv,
+                                         n_permutations=self.n_permutations, scorers=scorers, n_jobs=n_jobs,
+                                         verbose=verbose)
+        if self.is_discrimination(y):
+            (
+                (self.r_squared_Y_, self.permutation_r_squared_Y_, self.r_squared_Y_p_value_),
+                (self.r_squared_X_, self.permutation_r_squared_X_, self.r_squared_X_p_value_),
+                (self.q_squared_, self.permutation_q_squared_, self.q_squared_p_value_),
+                (self.discriminator_q_squared_, self.permutation_discriminator_q_squared_,
+                 self.discriminator_q_squared_p_value_),
+                (self.accuracy_, self.permutation_accuracy_, self.accuracy_p_value_),
+                (self.roc_auc_, self.permutation_roc_auc_, self.roc_auc_p_value_)
+            ) = results
+        else:
+            (
+                (self.r_squared_Y_, self.permutation_r_squared_Y_, self.r_squared_Y_p_value_),
+                (self.r_squared_X_, self.permutation_r_squared_X_, self.r_squared_X_p_value_),
+                (self.q_squared_, self.permutation_q_squared_, self.q_squared_p_value_),
+            ) = results
+
+        if verbose:
+            print('Estimating feature significance.')
         (self.feature_significance_,
          self.feature_p_values_,
          self.permutation_loadings_) = self._determine_significant_features(X, y, self.n_components_,
