@@ -1,10 +1,10 @@
 import numpy as np
+from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, ClassifierMixin
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
 from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, cross_val_score, permutation_test_score
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.utils import check_array
-from sklearn.externals.joblib import Parallel, delayed
 from sklearn.utils.multiclass import type_of_target
 from sklearn.utils.validation import check_is_fitted
 

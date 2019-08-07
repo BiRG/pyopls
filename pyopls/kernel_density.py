@@ -1,7 +1,7 @@
 import numpy as np
+from joblib import Parallel, delayed
 from sklearn.model_selection import GridSearchCV, KFold, LeaveOneOut
 from sklearn.neighbors import KernelDensity
-from sklearn.utils._joblib import Parallel, delayed
 
 
 class OPLSKernelDensity:
