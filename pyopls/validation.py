@@ -400,7 +400,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
 
         X = check_array(X, dtype=float, copy=True)
         y = check_array(y, dtype=None, copy=True, ensure_2d=False).reshape(-1, 1)
-        cv = cv or StratifiedKFold(self.k)
+        cv = cv or self._get_validator(y, self.k)
         check_is_fitted(self, ['estimator_', 'binarizer_'])
         target = self.binarizer_.transform(y).astype(float)
         results = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
