@@ -36,11 +36,8 @@ def permutation_test_score(estimator, X, y, groups=None, cv='warn',
         cross-validator uses them for grouping the samples  while splitting
         the dataset into train/test set.
 
-    scoring : string, callable or None, optional, default: None
-        A single string (see :ref:`scoring_parameter`) or a callable
-        (see :ref:`scoring`) to evaluate the predictions on the test set.
-
-        If None the estimator's score method is used.
+    scorers : string, callable or None, optional, default: None
+        a list of scoring functions
 
     cv : int, cross-validation generator or an iterable, optional
         Determines the cross-validation splitting strategy.
