@@ -127,6 +127,8 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         self.discriminator_q_squared_p_value_ = None
         self.permutation_discriminator_q_squared_ = None
 
+        self.discriminator_r_squared_ = None
+
         self.permutation_loadings_ = None
         self.estimator_ = None
         self.loadings_ = None
@@ -509,6 +511,8 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
                                                                             n_jobs, verbose, pre_dispatch)
 
         self.estimator_ = OPLS(self.n_components_, self.scale).fit(X, y)
+        if self.is_discrimination(y):
+            self.discriminator_r_squared_ = self.estimator_.r2d_score(X, y)
         return self
 
     def transform(self, X):
