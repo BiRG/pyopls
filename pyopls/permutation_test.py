@@ -77,6 +77,24 @@ def permutation_test_score(estimator, X, y, groups=None, cv='warn',
     verbose : integer, optional
         The verbosity level.
 
+
+    pre_dispatch : int, or string, optional
+        Controls the number of jobs that get dispatched during parallel
+        execution. Reducing this number can be useful to avoid an
+        explosion of memory consumption when more jobs get dispatched
+        than CPUs can process. This parameter can be:
+
+            - None, in which case all the jobs are immediately
+              created and spawned. Use this for lightweight and
+              fast-running jobs, to avoid delays due to on-demand
+              spawning of the jobs
+
+            - An int, giving the exact number of total jobs that are
+              spawned
+
+            - A string, giving an expression as a function of n_jobs,
+              as in '2*n_jobs'
+
     Returns
     -------
     score : float
@@ -156,6 +174,84 @@ def _shuffle(y, groups, random_state):
 
 def feature_permutation_loading(estimator, X, y, initial_permutations=100, alpha=0.2, final_permutations=500,
                                 random_state=0, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
+    """Determine the significance of each feature
+
+    This is done by permuting each feature in X and measuring the loading.
+    The feature is considered significant if the loadings are signficantly different.
+
+    This is always done with a regular OPLS regressor
+    OPLS-DA should be binarized first.
+
+    Parameters
+    ----------
+    estimator : estimator object implementing 'fit' with x_loadings_
+        The object to use to fit the data. This should have an [n_features, 1] x_loadings_ array. This can be a
+        one-component PLS or OPLS model.
+
+    X : array-like, shape = [n_samples, n_features]
+        Training vectors, where n_samples is the number of samples and
+        n_features is the number of predictors.
+
+    y : array-like, shape = [n_samples, 1]
+        Target vector, where n_samples is the number of samples.
+        This implementation only supports a single response (target) variable.
+
+    initial_permutations : int
+        The number of permutations to perform for all features.
+
+    alpha : float, in range (0, 1)
+        The threshold for significance. If a feature is found significant in the first round, it will be retested with
+        final_permutations in the second round.
+
+    final_permutations : int
+        The number of permutations to perform during the second round to retest points found significant in the first
+        round.
+
+    n_jobs : int or None, optional (default=None)
+        The number of CPUs to use to do the computation.
+        ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
+        ``-1`` means using all processors. See :term:`Glossary <n_jobs>`
+        for more details.
+
+    verbose : integer, optional
+        The verbosity level.
+
+    pre_dispatch : int, or string, optional
+        Controls the number of jobs that get dispatched during parallel
+        execution. Reducing this number can be useful to avoid an
+        explosion of memory consumption when more jobs get dispatched
+        than CPUs can process. This parameter can be:
+
+            - None, in which case all the jobs are immediately
+              created and spawned. Use this for lightweight and
+              fast-running jobs, to avoid delays due to on-demand
+              spawning of the jobs
+
+            - An int, giving the exact number of total jobs that are
+              spawned
+
+            - A string, giving an expression as a function of n_jobs,
+              as in '2*n_jobs'
+
+    random_state : int, RandomState instance or None, optional (default=0)
+        If int, random_state is the seed used by the random number generator;
+        If RandomState instance, random_state is the random number generator;
+        If None, the random number generator is the RandomState instance used
+        by `np.random`.
+
+    Returns
+    -------
+    x_loadings : array [n_features]
+        The x_loadings found from non-permuted data.
+
+    permutation_x_loadings: array [n_inner_permutations, n_features]
+        The one-component PLS loadings for each permutation in the first round.
+
+    p_values: array [n_features]
+        The p-values for each feature. The null hypothesis is that permuting the feature does not change it's weight
+        in the one-component PLS model.
+    """
+
     def feature_ind_generator(n_permutations_, feature_inds):
         """
         Repeats each value in feature_inds n_permutations_ times.
