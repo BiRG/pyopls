@@ -200,6 +200,7 @@ class OPLS(BaseEstimator, TransformerMixin, RegressorMixin):
         self.r_squared_X_ = ((t.T @ t) * (p.T @ p) / SS_X).item()
         self.r_squared_Y_ = ((t.T @ t) * (b_l ** 2.0) * (c ** 2.0) / SS_Y).item()
         self.residual_sum_sq_Y_ = -1 * (self.r_squared_Y_ - 1) * self.sum_sq_Y_
+
         return self
 
     def transform(self, X):

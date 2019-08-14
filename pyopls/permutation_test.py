@@ -1,3 +1,5 @@
+from sys import stderr
+
 import numpy as np
 from joblib import Parallel, delayed
 from sklearn.base import is_classifier, clone
@@ -5,6 +7,133 @@ from sklearn.metrics.scorer import _passthrough_scorer
 from sklearn.model_selection import check_cv
 from sklearn.utils import indexable, check_random_state, safe_indexing
 from sklearn.utils.metaestimators import _safe_split
+
+
+def non_cv_permutation_test_score(estimator, X, y, groups=None,
+                                  n_permutations=100, n_jobs=None, random_state=0,
+                                  verbose=0, pre_dispatch='2*n_jobs', scorers=None):
+    """Evaluate the significance of several non-cross-validated scores with permutations
+
+    Read more in the :ref:`User Guide <cross_validation>`.
+
+    Parameters
+    ----------
+    estimator : estimator object implementing 'fit'
+        The object to use to fit the data.
+
+    X : array-like of shape at least 2D
+        The data to fit.
+
+    y : array-like
+        The target variable to try to predict in the case of
+        supervised learning.
+
+    groups : array-like, with shape (n_samples,), optional
+        Labels to constrain permutation within groups, i.e. ``y`` values
+        are permuted among samples with the same group identifier.
+        When not specified, ``y`` values are permuted among all samples.
+
+        When a grouped cross-validator is used, the group labels are
+        also passed on to the ``split`` method of the cross-validator. The
+        cross-validator uses them for grouping the samples  while splitting
+        the dataset into train/test set.
+
+    scorers : string, callable or None, optional, default: None
+        a list of scoring functions
+
+
+    n_permutations : integer, optional
+        Number of times to permute ``y``.
+
+    n_jobs : int or None, optional (default=None)
+        The number of CPUs to use to do the computation.
+        ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
+        ``-1`` means using all processors. See :term:`Glossary <n_jobs>`
+        for more details.
+
+    random_state : int, RandomState instance or None, optional (default=0)
+        If int, random_state is the seed used by the random number generator;
+        If RandomState instance, random_state is the random number generator;
+        If None, the random number generator is the RandomState instance used
+        by `np.random`.
+
+    verbose : integer, optional
+        The verbosity level.
+
+
+    pre_dispatch : int, or string, optional
+        Controls the number of jobs that get dispatched during parallel
+        execution. Reducing this number can be useful to avoid an
+        explosion of memory consumption when more jobs get dispatched
+        than CPUs can process. This parameter can be:
+
+            - None, in which case all the jobs are immediately
+              created and spawned. Use this for lightweight and
+              fast-running jobs, to avoid delays due to on-demand
+              spawning of the jobs
+
+            - An int, giving the exact number of total jobs that are
+              spawned
+
+            - A string, giving an expression as a function of n_jobs,
+              as in '2*n_jobs'
+
+    Returns
+    -------
+    score : float
+        The true score without permuting targets.
+
+    permutation_scores : array, shape (n_permutations,)
+        The scores obtained for each permutations.
+
+    pvalue : float
+        The p-value, which approximates the probability that the score would
+        be obtained by chance. This is calculated as:
+
+        `(C + 1) / (n_permutations + 1)`
+
+        Where C is the number of permutations whose score >= the true score.
+
+        The best possible p-value is 1/(n_permutations + 1), the worst is 1.0.
+
+    Notes
+    -----
+    This function implements Test 1 in:
+
+        Ojala and Garriga. Permutation Tests for Studying Classifier
+        Performance.  The Journal of Machine Learning Research (2010)
+        vol. 11
+
+    """
+    X, y, groups = indexable(X, y, groups)
+
+    random_state = check_random_state(random_state)
+    if scorers is None or not len(scorers):
+        if hasattr(estimator, 'score'):
+            scorers = [_passthrough_scorer]
+        else:
+            raise TypeError(
+                "If no scoring is specified, the estimator passed should "
+                "have a 'score' method. The estimator %r does not."
+                % estimator)
+
+    # We clone the estimator to make sure that all the folds are
+    # independent, and that it is pickle-able.
+    score = _non_cv_permutation_test_score(clone(estimator), X, y, groups, scorers)
+    permutation_scores = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
+        delayed(_non_cv_permutation_test_score)(
+            clone(estimator), X, _shuffle(y, groups, random_state),
+            groups, scorers)
+        for _ in range(n_permutations))
+    permutation_scores = np.array(permutation_scores)
+    pvalue = (np.sum(permutation_scores >= score, axis=0) + 1.0) / (n_permutations + 1)
+    return [(score[i], permutation_scores[:, i], pvalue[i]) for i in range(len(scorers))]
+
+
+def _non_cv_permutation_test_score(estimator, X, y, groups, scorers):
+    """Auxiliary function for permutation_test_score"""
+    estimator.fit(X, y)
+    return [scorer(estimator, X, y) for scorer in scorers]
 
 
 def permutation_test_score(estimator, X, y, groups=None, cv='warn',
@@ -264,22 +393,26 @@ def feature_permutation_loading(estimator, X, y, initial_permutations=100, alpha
             if (count % n_permutations_) == 0:
                 i += 1
 
+    def _log(txt):
+        if verbose in range(1, 51):
+            stderr.write(txt + '\n')
+        if verbose > 50:
+            print(txt)
+
     random_state = check_random_state(random_state)
     n_features = X.shape[1]
     x_loadings = np.ravel(estimator.fit(X, y).x_loadings_)
     loading_max = np.max((x_loadings, -1 * x_loadings), axis=0)
     loading_min = np.min((x_loadings, -1 * x_loadings), axis=0)
 
-    if verbose:
-        print('Performing initial permutation tests.')
+    _log('Performing initial permutation tests.')
     permutation_x_loadings = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
         delayed(_feature_permutation_loading)(
             clone(estimator), _feature_shuffle(X, feature_ind, random_state), y, x_loadings, feature_ind)
         for feature_ind in feature_ind_generator(initial_permutations, [i for i in range(n_features)]))
     permutation_x_loadings = np.array(permutation_x_loadings).reshape(n_features, initial_permutations).T
 
-    if verbose:
-        print('Calculating p values.')
+    _log('Calculating p values.')
     p_values = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
         delayed(_loading_p_value)(permutation_x_loading, upper, lower, initial_permutations)
         for permutation_x_loading, upper, lower in zip(np.hsplit(permutation_x_loadings, n_features),
@@ -291,8 +424,7 @@ def feature_permutation_loading(estimator, X, y, initial_permutations=100, alpha
     retest_loading_max = np.max((x_loadings[retest_columns], -1 * x_loadings[retest_columns]), axis=0)
     retest_loading_min = np.min((x_loadings[retest_columns], -1 * x_loadings[retest_columns]), axis=0)
 
-    if verbose:
-        print(f'Re-testing {len(retest_columns)} features')
+    _log(f'Re-testing {len(retest_columns)} features')
     retest_loadings = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
         delayed(_feature_permutation_loading)(
             clone(estimator), _feature_shuffle(X, feature_ind, random_state), y, x_loadings, feature_ind)
@@ -300,8 +432,7 @@ def feature_permutation_loading(estimator, X, y, initial_permutations=100, alpha
     retest_loadings = np.array(retest_loadings).reshape(len(retest_columns), final_permutations).T
 
     # replace p-values with the more accurate ones
-    if verbose:
-        print(f'Calculating p values for {len(retest_columns)} features.')
+    _log(f'Calculating p values for {len(retest_columns)} features.')
     p_values = np.array(p_values)
     p_values[retest_columns] = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
         delayed(_loading_p_value)(retest_loading, upper, lower, initial_permutations)

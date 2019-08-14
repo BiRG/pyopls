@@ -1,3 +1,5 @@
+from sys import stderr
+
 import numpy as np
 from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, ClassifierMixin
@@ -9,7 +11,7 @@ from sklearn.utils.multiclass import type_of_target
 from sklearn.utils.validation import check_is_fitted
 
 from .opls import OPLS
-from .permutation_test import permutation_test_score, feature_permutation_loading
+from .permutation_test import permutation_test_score, feature_permutation_loading, non_cv_permutation_test_score
 
 
 class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
@@ -39,7 +41,45 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
     q_squared_p_value_ : float
         The p-value for the permutation test on Q-squared
 
+
+    r_squared_Y_: float, overall R-squared metric for the regression
+
+    permutation_r_squared_Y_: array [n_splits*n_permutations]
+        The R-squared metric for each permutation of the target
+
+    r_squared_Y_p_value_ : float
+        The p-value for the permutation test on R-squared
+
+
+    r_squared_X_: float, overall R-squared X metric (
+
+    permutation_r_squared_X_: array [n_splits*n_permutations]
+        The R-squared X metric
+
+    r_squared_X_p_value_ : float
+        The p-value for the permutation test on R-squared X
+
+    discriminant_q_squared_: float
+        Discriminant Q-squared, if this is an OPLSDA problem. Discriminant Q-squared disregards the error of class
+        predictions whose values are beyond the class labels (e.g. it treats predictions of -1.5 as -1 and 1.5 as 1).
+
+    permutation_discriminant_q_squared_: array [n_splits*n_permutations]
+        The discriminant R-squared metric for the left-out data for each permutation.
+
+    discriminant_q_squared_p_value_ : float
+        The p-value for the permutation test on DQ-squared
+
     accuracy_ : float, accuracy for discrimination
+
+    discriminant_r_squared_: float
+        Discriminant R-squared, if this is an OPLSDA problem. Discriminant R-squared disregards the error of class
+        predictions whose values are beyond the class labels (e.g. it treats a predictions of -1.5 as -1 and 1.5 as 1).
+
+    permutation_discriminant_r_squared_: array [n_splits*n_permutations]
+        The discriminant R-squared metric each permutation.
+
+    discriminant_r_squared_p_value_ : float
+        The p-value for the permutation test on DR-squared
 
     permutation_accuracy_: array [n_splits*n_permutations]
         The accuracy of the left-out data for each permutation
@@ -81,7 +121,12 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
     ----------
     Johan Trygg and Svante Wold. Orthogonal projections to latent structures (O-PLS).
     J. Chemometrics 2002; 16: 119-128. DOI: 10.1002/cem.695
+
+    Johan A. Westerhuis, Ewoud J. J. van Velzen, Huub C. J. Hoefsloot and Age K. Smilde.
+    Discriminant Q-squared (DQ-squared) for improved discrimination in PLSDA models.
+    Metabolomics (2008) 4: 293. https://doi.org/10.1007/s11306-008-0126-2
     """
+
     def __init__(self,
                  min_n_components=1,
                  k=10,
@@ -123,11 +168,13 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         self.permutation_roc_auc_ = None
         self.roc_auc_p_value_ = None
 
-        self.discriminator_q_squared_ = None
-        self.discriminator_q_squared_p_value_ = None
-        self.permutation_discriminator_q_squared_ = None
+        self.discriminant_q_squared_ = None
+        self.discriminant_q_squared_p_value_ = None
+        self.permutation_discriminant_q_squared_ = None
 
-        self.discriminator_r_squared_ = None
+        self.discriminant_r_squared_ = None
+        self.discriminant_r_squared_p_value_ = None
+        self.permutation_discriminant_r_squared_ = None
 
         self.permutation_loadings_ = None
         self.estimator_ = None
@@ -396,6 +443,12 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         pos_label : string
             If this is a discrimination problem, the value of the target corresponding to "1".
 
+        random_state : int, RandomState instance or None, optional (default=0)
+            If int, random_state is the seed used by the random number generator;
+            If RandomState instance, random_state is the random number generator;
+            If None, the random number generator is the RandomState instance used
+            by `np.random`.
+
         n_jobs : int or None, optional (default=None)
             The number of CPUs to use to do the computation.
             ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
@@ -425,54 +478,77 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
 
         """
 
+        def _log(txt):
+            if verbose in range(1, 51):
+                stderr.write(txt + '\n')
+            if verbose > 50:
+                print(txt)
+
         X = check_array(X, dtype=float, copy=True)
         y = self._check_target(y, pos_label)
 
         if not n_components:
-            if verbose:
-                print('Determining number of components to remove.')
+            _log('Determining number of components to remove.')
             n_components = self._determine_n_components(X, y)
 
         self.n_components_ = n_components or self._determine_n_components(X, y)
+
+        self.estimator_ = OPLS(self.n_components_, self.scale).fit(X, y)
+        if self.is_discrimination(y):
+            self.discriminant_r_squared_ = self.estimator_.r2d_score(X, y)
+
         cv = cv or self._get_validator(y, self.k)
 
-        scorers = [self._r2_Y, self._r2_X, self._q2_Y]
+        non_cv_scorers = [self._r2_Y, self._r2_X]
         if self.is_discrimination(y):
-            scorers += [self._q2d_Y, self._discriminator_accuracy, self._discriminator_roc_auc]
+            non_cv_scorers.append(self._q2d_Y)  # it's not technically Q-squared because we aren't cross-validating
 
-        if verbose:
-            print('Validating metrics.')
+        cv_scorers = [self._q2_Y]
+        if self.is_discrimination(y):
+            cv_scorers += [self._q2d_Y, self._discriminator_accuracy, self._discriminator_roc_auc]
 
-        results = permutation_test_score(OPLS(self.n_components_, self.scale), X, y, cv=cv,
-                                         n_permutations=self.n_permutations, scorers=scorers,
-                                         n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)
+        _log('Performing non-cross-validated metric permutations tests.')
+
+        non_cv_results = non_cv_permutation_test_score(OPLS(self.n_components_, self.scale), X, y,
+                                                       n_permutations=self.n_permutations, scorers=non_cv_scorers,
+                                                       n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)
         if self.is_discrimination(y):
             (
                 (self.r_squared_Y_, self.permutation_r_squared_Y_, self.r_squared_Y_p_value_),
                 (self.r_squared_X_, self.permutation_r_squared_X_, self.r_squared_X_p_value_),
-                (self.q_squared_, self.permutation_q_squared_, self.q_squared_p_value_),
-                (self.discriminator_q_squared_, self.permutation_discriminator_q_squared_,
-                 self.discriminator_q_squared_p_value_),
-                (self.accuracy_, self.permutation_accuracy_, self.accuracy_p_value_),
-                (self.roc_auc_, self.permutation_roc_auc_, self.roc_auc_p_value_)
-            ) = results
+                (self.discriminant_r_squared_, self.permutation_discriminant_r_squared_,
+                 self.discriminant_r_squared_p_value_)
+            ) = non_cv_results
         else:
             (
                 (self.r_squared_Y_, self.permutation_r_squared_Y_, self.r_squared_Y_p_value_),
                 (self.r_squared_X_, self.permutation_r_squared_X_, self.r_squared_X_p_value_),
-                (self.q_squared_, self.permutation_q_squared_, self.q_squared_p_value_),
-            ) = results
+            ) = non_cv_results
 
-        if verbose:
-            print('Estimating feature significance.')
+        _log('Performing cross-validated metric permutation tests.')
+
+        cv_results = permutation_test_score(OPLS(self.n_components_, self.scale), X, y, cv=cv,
+                                            n_permutations=self.n_permutations, scorers=cv_scorers,
+                                            n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)
+        if self.is_discrimination(y):
+            (
+                (self.q_squared_, self.permutation_q_squared_, self.q_squared_p_value_),
+                (self.discriminant_q_squared_, self.permutation_discriminant_q_squared_,
+                 self.discriminant_q_squared_p_value_),
+                (self.accuracy_, self.permutation_accuracy_, self.accuracy_p_value_),
+                (self.roc_auc_, self.permutation_roc_auc_, self.roc_auc_p_value_)
+            ) = cv_results
+        else:
+            (
+                (self.q_squared_, self.permutation_q_squared_, self.q_squared_p_value_)
+            ) = cv_results
+
+        _log('Estimating feature significance.')
+
         (self.feature_significance_,
          self.feature_p_values_,
          self.permutation_loadings_) = self._determine_significant_features(X, y, self.n_components_, random_state,
                                                                             n_jobs, verbose, pre_dispatch)
-
-        self.estimator_ = OPLS(self.n_components_, self.scale).fit(X, y)
-        if self.is_discrimination(y):
-            self.discriminator_r_squared_ = self.estimator_.r2d_score(X, y)
         return self
 
     def transform(self, X):
