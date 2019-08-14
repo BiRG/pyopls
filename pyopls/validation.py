@@ -9,7 +9,7 @@ from sklearn.utils.multiclass import type_of_target
 from sklearn.utils.validation import check_is_fitted
 
 from .opls import OPLS
-from .permutation_test import permutation_test_score
+from .permutation_test import permutation_test_score, feature_permutation_loading
 
 
 class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
@@ -282,6 +282,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
                                         X,
                                         y,
                                         n_components,
+                                        random_state=0,
                                         n_jobs=None,
                                         verbose=0,
                                         pre_dispatch='2*n_jobs'):
@@ -336,62 +337,20 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         Returns
         -------
         significance: array [n_features], type bool
-            The number of components to remove to maximize q-squared
+            Whether a particular feature is significant.
 
         p_values: array [n_features]
             The p-values for each feature. The null hypothesis is that permuting the feature does not change it's weight
             in the one-component PLS model.
 
-        permuted_loadings: array [n_regressors, n_inner_permutations, n_features]
+        permuted_loadings: array [n_inner_permutations, n_features]
             The one-component PLS loadings for each permutation
         """
-
-        # permuted loadings for one feature
-        def _get_permuted_loading(n_permutations, j):
-            loadings = np.empty(n_permutations, dtype=float)
-            for i in range(0, n_permutations):
-                X_permuted = np.copy(X)
-                X_permuted[:, j] = np.random.permutation(X[:, j])
-                test_loadings = estimator.fit(X_permuted, y).x_loadings_
-                # make sure direction of vector is the same
-                err1 = np.sum(np.square(test_loadings[:j] - reference_loadings[:j])) \
-                       + np.sum(np.square(test_loadings[j:] - reference_loadings[j:]))
-                err2 = np.sum(np.square(test_loadings[:j] + reference_loadings[:j])) \
-                       + np.sum(np.square(test_loadings[j:] + reference_loadings[j:]))
-                sign = -1 if err2 < err1 else 1
-                loadings[i] = sign * test_loadings[j].item()
-            return loadings
-
-        def _determine_feature_significance(column):
-            p_value = ((np.sum(permuted_loadings[column] >= loading_max[column])
-                        + np.sum(permuted_loadings[column] <= loading_min[column]) + 1)
-                       / (self.n_inner_permutations + 1))
-            if p_value < inner_alpha:
-                # perform additional permutations if potentially significant
-                permuted_loading = _get_permuted_loading(self.n_outer_permutations, column)
-                p_value = (np.sum(permuted_loading >= loading_max[column])
-                           + np.sum(permuted_loading <= loading_min[column]) + 1) / (self.n_outer_permutations + 1)
-            return p_value
-
-        # determine loadings for the features using canonical model
-        estimator = OPLS(n_components, self.scale)
-
-        inner_alpha = self.inner_alpha / 2
-        outside_alpha = self.outer_alpha / 2
-
-        reference_loadings = np.ravel(estimator.fit(X, y).x_loadings_)
-        loading_max = np.max((reference_loadings, -1 * reference_loadings), axis=0)
-        loading_min = np.min((reference_loadings, -1 * reference_loadings), axis=0)
-
-        permuted_loadings = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
-            delayed(_get_permuted_loading)(self.n_inner_permutations, i) for i in range(X.shape[1]))
-
-        p_values = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
-            delayed(_determine_feature_significance)(i) for i in range(X.shape[1]))
-
-        significant = [p_value < outside_alpha for p_value in p_values]
-
-        return np.hstack(significant), np.hstack(p_values), np.vstack(permuted_loadings).T
+        x_loadings, permutation_x_loadings, p_values = feature_permutation_loading(
+            OPLS(n_components, self.scale, True), X, y, self.n_inner_permutations, self.inner_alpha,
+            self.n_outer_permutations, random_state, n_jobs, verbose, pre_dispatch
+        )
+        return p_values < self.outer_alpha, p_values, permutation_x_loadings
 
     def cross_val_roc_curve(self, X, y, cv=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
         def _get_roc(train_inds, test_inds):
@@ -408,7 +367,8 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         )
         return [result[0] for result in results], [result[1] for result in results], [result[2] for result in results]
 
-    def fit(self, X, y, n_components=None, cv=None, pos_label=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
+    def fit(self, X, y, n_components=None, cv=None, pos_label=None,
+            random_state=0, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
         """Evaluate the quality of the OPLS regressor
 
         The q-squared value and a p-value for each feature's significance is determined. The final regressor can be
@@ -484,8 +444,8 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
             print('Validating metrics.')
 
         results = permutation_test_score(OPLS(self.n_components_, self.scale), X, y, cv=cv,
-                                         n_permutations=self.n_permutations, scorers=scorers, n_jobs=n_jobs,
-                                         verbose=verbose)
+                                         n_permutations=self.n_permutations, scorers=scorers,
+                                         n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)
         if self.is_discrimination(y):
             (
                 (self.r_squared_Y_, self.permutation_r_squared_Y_, self.r_squared_Y_p_value_),
@@ -507,7 +467,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
             print('Estimating feature significance.')
         (self.feature_significance_,
          self.feature_p_values_,
-         self.permutation_loadings_) = self._determine_significant_features(X, y, self.n_components_,
+         self.permutation_loadings_) = self._determine_significant_features(X, y, self.n_components_, random_state,
                                                                             n_jobs, verbose, pre_dispatch)
 
         self.estimator_ = OPLS(self.n_components_, self.scale).fit(X, y)

@@ -9,8 +9,8 @@ from sklearn.utils.metaestimators import _safe_split
 
 def permutation_test_score(estimator, X, y, groups=None, cv='warn',
                            n_permutations=100, n_jobs=None, random_state=0,
-                           verbose=0, scorers=None):
-    """Evaluate the significance of a cross-validated score with permutations
+                           verbose=0, pre_dispatch='2*n_jobs', scorers=None):
+    """Evaluate the significance of several cross-validated scores with permutations
 
     Read more in the :ref:`User Guide <cross_validation>`.
 
@@ -77,6 +77,24 @@ def permutation_test_score(estimator, X, y, groups=None, cv='warn',
     verbose : integer, optional
         The verbosity level.
 
+
+    pre_dispatch : int, or string, optional
+        Controls the number of jobs that get dispatched during parallel
+        execution. Reducing this number can be useful to avoid an
+        explosion of memory consumption when more jobs get dispatched
+        than CPUs can process. This parameter can be:
+
+            - None, in which case all the jobs are immediately
+              created and spawned. Use this for lightweight and
+              fast-running jobs, to avoid delays due to on-demand
+              spawning of the jobs
+
+            - An int, giving the exact number of total jobs that are
+              spawned
+
+            - A string, giving an expression as a function of n_jobs,
+              as in '2*n_jobs'
+
     Returns
     -------
     score : float
@@ -120,7 +138,7 @@ def permutation_test_score(estimator, X, y, groups=None, cv='warn',
     # We clone the estimator to make sure that all the folds are
     # independent, and that it is pickle-able.
     score = _permutation_test_score(clone(estimator), X, y, groups, cv, scorers)
-    permutation_scores = Parallel(n_jobs=n_jobs, verbose=verbose)(
+    permutation_scores = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
         delayed(_permutation_test_score)(
             clone(estimator), X, _shuffle(y, groups, random_state),
             groups, cv, scorers)
@@ -152,3 +170,167 @@ def _shuffle(y, groups, random_state):
             this_mask = (groups == group)
             indices[this_mask] = random_state.permutation(indices[this_mask])
     return safe_indexing(y, indices)
+
+
+def feature_permutation_loading(estimator, X, y, initial_permutations=100, alpha=0.2, final_permutations=500,
+                                random_state=0, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
+    """Determine the significance of each feature
+
+    This is done by permuting each feature in X and measuring the loading.
+    The feature is considered significant if the loadings are signficantly different.
+
+    This is always done with a regular OPLS regressor
+    OPLS-DA should be binarized first.
+
+    Parameters
+    ----------
+    estimator : estimator object implementing 'fit' with x_loadings_
+        The object to use to fit the data. This should have an [n_features, 1] x_loadings_ array. This can be a
+        one-component PLS or OPLS model.
+
+    X : array-like, shape = [n_samples, n_features]
+        Training vectors, where n_samples is the number of samples and
+        n_features is the number of predictors.
+
+    y : array-like, shape = [n_samples, 1]
+        Target vector, where n_samples is the number of samples.
+        This implementation only supports a single response (target) variable.
+
+    initial_permutations : int
+        The number of permutations to perform for all features.
+
+    alpha : float, in range (0, 1)
+        The threshold for significance. If a feature is found significant in the first round, it will be retested with
+        final_permutations in the second round.
+
+    final_permutations : int
+        The number of permutations to perform during the second round to retest points found significant in the first
+        round.
+
+    n_jobs : int or None, optional (default=None)
+        The number of CPUs to use to do the computation.
+        ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
+        ``-1`` means using all processors. See :term:`Glossary <n_jobs>`
+        for more details.
+
+    verbose : integer, optional
+        The verbosity level.
+
+    pre_dispatch : int, or string, optional
+        Controls the number of jobs that get dispatched during parallel
+        execution. Reducing this number can be useful to avoid an
+        explosion of memory consumption when more jobs get dispatched
+        than CPUs can process. This parameter can be:
+
+            - None, in which case all the jobs are immediately
+              created and spawned. Use this for lightweight and
+              fast-running jobs, to avoid delays due to on-demand
+              spawning of the jobs
+
+            - An int, giving the exact number of total jobs that are
+              spawned
+
+            - A string, giving an expression as a function of n_jobs,
+              as in '2*n_jobs'
+
+    random_state : int, RandomState instance or None, optional (default=0)
+        If int, random_state is the seed used by the random number generator;
+        If RandomState instance, random_state is the random number generator;
+        If None, the random number generator is the RandomState instance used
+        by `np.random`.
+
+    Returns
+    -------
+    x_loadings : array [n_features]
+        The x_loadings found from non-permuted data.
+
+    permutation_x_loadings: array [n_inner_permutations, n_features]
+        The one-component PLS loadings for each permutation in the first round.
+
+    p_values: array [n_features]
+        The p-values for each feature. The null hypothesis is that permuting the feature does not change it's weight
+        in the one-component PLS model.
+    """
+
+    def feature_ind_generator(n_permutations_, feature_inds):
+        """
+        Repeats each value in feature_inds n_permutations_ times.
+        """
+        i = 0
+        count = 0
+        while count < (n_permutations_ * len(feature_inds)):
+            yield feature_inds[i]
+            count += 1
+            if (count % n_permutations_) == 0:
+                i += 1
+
+    random_state = check_random_state(random_state)
+    n_features = X.shape[1]
+    x_loadings = np.ravel(estimator.fit(X, y).x_loadings_)
+    loading_max = np.max((x_loadings, -1 * x_loadings), axis=0)
+    loading_min = np.min((x_loadings, -1 * x_loadings), axis=0)
+
+    if verbose:
+        print('Performing initial permutation tests.')
+    permutation_x_loadings = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
+        delayed(_feature_permutation_loading)(
+            clone(estimator), _feature_shuffle(X, feature_ind, random_state), y, x_loadings, feature_ind)
+        for feature_ind in feature_ind_generator(initial_permutations, [i for i in range(n_features)]))
+    permutation_x_loadings = np.array(permutation_x_loadings).reshape(n_features, initial_permutations).T
+
+    if verbose:
+        print('Calculating p values.')
+    p_values = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
+        delayed(_loading_p_value)(permutation_x_loading, upper, lower, initial_permutations)
+        for permutation_x_loading, upper, lower in zip(np.hsplit(permutation_x_loadings, n_features),
+                                                       loading_max, loading_min)
+    )
+
+    # Retest values found significant in first round
+    retest_columns = [i for i in range(n_features) if p_values[i] < (alpha / 2.0)]  # remember, this is two-tailed
+    retest_loading_max = np.max((x_loadings[retest_columns], -1 * x_loadings[retest_columns]), axis=0)
+    retest_loading_min = np.min((x_loadings[retest_columns], -1 * x_loadings[retest_columns]), axis=0)
+
+    if verbose:
+        print(f'Re-testing {len(retest_columns)} features')
+    retest_loadings = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
+        delayed(_feature_permutation_loading)(
+            clone(estimator), _feature_shuffle(X, feature_ind, random_state), y, x_loadings, feature_ind)
+        for feature_ind in feature_ind_generator(final_permutations, retest_columns))
+    retest_loadings = np.array(retest_loadings).reshape(len(retest_columns), final_permutations).T
+
+    # replace p-values with the more accurate ones
+    if verbose:
+        print(f'Calculating p values for {len(retest_columns)} features.')
+    p_values = np.array(p_values)
+    p_values[retest_columns] = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
+        delayed(_loading_p_value)(retest_loading, upper, lower, initial_permutations)
+        for retest_loading, upper, lower in zip(np.hsplit(retest_loadings, len(retest_columns)),
+                                                retest_loading_max, retest_loading_min)
+    )
+    p_values = np.array(p_values)
+    return x_loadings, permutation_x_loadings, p_values
+
+
+def _feature_permutation_loading(estimator, X, y, reference_loadings, feature_ind):
+    """Auxiliary function for feature_permutation_loading"""
+    """Not that since loading only depends on training data, we dont use cross-validation"""
+    test_loadings = np.ravel(estimator.fit(X, y).x_loadings_)
+    # make directions the same
+    err1 = (np.sum(np.square(test_loadings[:feature_ind] - reference_loadings[:feature_ind]))
+            + np.sum(np.square(test_loadings[feature_ind:] - reference_loadings[feature_ind:])))
+    err2 = (np.sum(np.square(test_loadings[:feature_ind] + reference_loadings[:feature_ind]))
+            + np.sum(np.square(test_loadings[feature_ind:] + reference_loadings[feature_ind:])))
+    sign = -1 if err2 < err1 else 1
+    return sign * test_loadings[feature_ind]
+
+
+def _feature_shuffle(X, feature_ind, random_state):
+    X = X.copy()
+    random_state.shuffle(X[:, feature_ind])
+    return X
+
+
+def _loading_p_value(permutation_loadings, upper, lower, n_permutations):
+    return (np.sum(permutation_loadings >= upper) + np.sum(permutation_loadings <= lower) + 1) / (n_permutations + 1)
+
