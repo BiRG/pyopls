@@ -525,6 +525,8 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
                 (self.r_squared_X_, self.permutation_r_squared_X_, self.r_squared_X_p_value_),
             ) = non_cv_results
 
+        self.r_squared_X_p_value_ = 1.0 - self.r_squared_X_p_value_  # r_squared_X is "better" when it's smaller
+
         _log('Performing cross-validated metric permutation tests.')
 
         cv_results = permutation_test_score(OPLS(self.n_components_, self.scale), X, y, cv=cv,
