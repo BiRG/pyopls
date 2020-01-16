@@ -230,12 +230,18 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
     @staticmethod
     def _discriminator_accuracy(est: OPLS, X, y):
         y_pred = np.sign(est.predict(X))
-        return accuracy_score(y.astype(int), y_pred.astype(int))
+        try:
+            return accuracy_score(y.astype(int), y_pred.astype(int))
+        except ValueError:
+            return float('nan')
 
     @staticmethod
     def _discriminator_roc_auc(est: OPLS, X, y):
         y_score = 0.5 * (np.clip(est.predict(X), -1, 1) + 1)
-        return roc_auc_score(y, y_score)
+        try:
+            return roc_auc_score(y, y_score)
+        except ValueError:
+            return float('nan')
 
     def _process_binary_target(self, y, pos_label=None):
         self.binarizer_ = LabelBinarizer(-1, 1)
