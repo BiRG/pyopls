@@ -234,6 +234,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         try:
             return accuracy_score(y.astype(int), y_pred.astype(int))
         except ValueError:
+            warnings.warn(str(e), UserWarning)
             return float('nan')
 
     @staticmethod
@@ -241,7 +242,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         try:
             return roc_auc_score(y, np.clip(est.predict(X), -1, 1))
         except ValueError as e:
-            warnings.warn(e.__str__, UserWarning)
+            warnings.warn(str(e), UserWarning)
             return float('nan')
 
     def _process_binary_target(self, y, pos_label=None):
