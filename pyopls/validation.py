@@ -1,3 +1,4 @@
+import warnings
 from sys import stderr
 
 import numpy as np
@@ -237,10 +238,10 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
 
     @staticmethod
     def _discriminator_roc_auc(est: OPLS, X, y):
-        y_score = 0.5 * (np.clip(est.predict(X), -1, 1) + 1)
         try:
-            return roc_auc_score(y, y_score)
-        except ValueError:
+            return roc_auc_score(y, np.clip(est.predict(X), -1, 1))
+        except ValueError as e:
+            warnings.warn(e.__str__, UserWarning)
             return float('nan')
 
     def _process_binary_target(self, y, pos_label=None):
