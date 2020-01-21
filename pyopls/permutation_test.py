@@ -2,11 +2,11 @@ from sys import stderr
 
 import numpy as np
 from joblib import Parallel, delayed
-from sklearn.base import is_classifier, clone
+from sklearn.base import is_classifier, clone, ClassifierMixin
+from sklearn.metrics import r2_score, accuracy_score
 from sklearn.metrics.scorer import _passthrough_scorer
-from sklearn.model_selection import check_cv
+from sklearn.model_selection import check_cv, cross_val_predict
 from sklearn.utils import indexable, check_random_state, safe_indexing
-from sklearn.utils.metaestimators import _safe_split
 
 
 def non_cv_permutation_test_score(estimator, X, y, groups=None,
@@ -138,10 +138,15 @@ def _non_cv_permutation_test_score(estimator, X, y, groups, scorers):
 
 def permutation_test_score(estimator, X, y, groups=None, cv='warn',
                            n_permutations=100, n_jobs=None, random_state=0,
-                           verbose=0, pre_dispatch='2*n_jobs', scorers=None):
+                           verbose=0, pre_dispatch='2*n_jobs', cv_score_functions=None, non_cv_scorers=None,
+                           fit_params=None, method='predict', parallel_by='permutation'):
     """Evaluate the significance of several cross-validated scores with permutations
 
-    Read more in the :ref:`User Guide <cross_validation>`.
+    Note: this is different from sklearn.model_selection.permutation_test_score in two ways.
+      1. The scikit-learn method calculates the metrics for each CV split, this makes using metrics like r-squared with
+      LeaveOneOut impossible. This method uses sklearn.model_selection.cross_val_predict to predict the left-out labels,
+      then calculates the metrics for that prediction.
+      2. The scikit-learn method only evaluates one metric at a time, this one evaluates an arbitrary number of metrics
 
     Parameters
     ----------
@@ -165,8 +170,16 @@ def permutation_test_score(estimator, X, y, groups=None, cv='warn',
         cross-validator uses them for grouping the samples  while splitting
         the dataset into train/test set.
 
-    scorers : string, callable or None, optional, default: None
-        a list of scoring functions
+    cv_score_functions : list of callables or None, optional, default: None
+        a list of score functions of form score(y_true, y_pred) (like r2_score, accuracy_score).
+        If you have special arguments for your score function you should create another function with
+        the required prototype that wraps that function.
+
+    non_cv_scorers : list of callables or None, optional, default: None
+        a list of scorer functions of form scorer(est, y_true, y_pred). These scores will be calculated without
+        cross-validation.
+        If you have special arguments for your score function you should create another function with
+        the required prototype that wraps that function.
 
     cv : int, cross-validation generator or an iterable, optional
         Determines the cross-validation splitting strategy.
@@ -180,13 +193,6 @@ def permutation_test_score(estimator, X, y, groups=None, cv='warn',
         For integer/None inputs, if the estimator is a classifier and ``y`` is
         either binary or multiclass, :class:`StratifiedKFold` is used. In all
         other cases, :class:`KFold` is used.
-
-        Refer :ref:`User Guide <cross_validation>` for the various
-        cross-validation strategies that can be used here.
-
-        .. versionchanged:: 0.20
-            ``cv`` default value if None will change from 3-fold to 5-fold
-            in v0.22.
 
     n_permutations : integer, optional
         Number of times to permute ``y``.
@@ -224,6 +230,19 @@ def permutation_test_score(estimator, X, y, groups=None, cv='warn',
             - A string, giving an expression as a function of n_jobs,
               as in '2*n_jobs'
 
+    fit_params : dict, optional
+        Parameters to pass to the fit method of the estimator.
+
+    method : string, optional, default: 'predict'
+        Invokes the passed method name of the passed estimator. For
+        method='predict_proba', the columns correspond to the classes
+        in sorted order.
+
+    parallel_by : string, optional, default: 'permutation'
+        Whether to parallelize the estimation step or the permuation step.
+        Either 'estimation' or 'permutation'. If 'estimation', the training of each cross-validation
+        fold gets its own job. If 'permutation', each permutation of the target gets its own job.
+
     Returns
     -------
     score : float
@@ -255,38 +274,54 @@ def permutation_test_score(estimator, X, y, groups=None, cv='warn',
 
     cv = check_cv(cv, y, classifier=is_classifier(estimator))
     random_state = check_random_state(random_state)
-    if scorers is None:
-        if hasattr(estimator, 'score'):
-            scorers = [_passthrough_scorer]
+    if cv_score_functions is None:
+        if isinstance(estimator, ClassifierMixin):
+            cv_score_functions = [accuracy_score]
         else:
-            raise TypeError(
-                "If no scoring is specified, the estimator passed should "
-                "have a 'score' method. The estimator %r does not."
-                % estimator)
-
+            cv_score_functions = [r2_score]
     # We clone the estimator to make sure that all the folds are
     # independent, and that it is pickle-able.
-    score = _permutation_test_score(clone(estimator), X, y, groups, cv, scorers)
-    permutation_scores = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
-        delayed(_permutation_test_score)(
-            clone(estimator), X, _shuffle(y, groups, random_state),
-            groups, cv, scorers)
-        for _ in range(n_permutations))
-    permutation_scores = np.array(permutation_scores)
+    score = _permutation_test_score(clone(estimator), X, y, groups, cv,
+                                    n_jobs, verbose, fit_params, pre_dispatch,
+                                    method, cv_score_functions, non_cv_scorers)
+
+    if parallel_by == 'estimation':
+        permutation_scores = np.vstack([
+            _permutation_test_score(
+                clone(estimator), X, _shuffle(y, groups, random_state),
+                groups, cv, n_jobs, verbose, fit_params, pre_dispatch,
+                method, cv_score_functions, non_cv_scorers
+            ) for _ in range(n_permutations)
+        ])
+    elif parallel_by == 'permutation':
+        permutation_scores = np.vstack(
+            Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
+                delayed(_permutation_test_score)(
+                    clone(estimator), X, _shuffle(y, groups, random_state),
+                    groups, cv, fit_params=fit_params, method=method, score_functions=cv_score_functions,
+                    non_cv_scorers=non_cv_scorers
+                ) for _ in range(n_permutations)
+            )
+        )
+    else:
+        raise ValueError(f'Invalid option for parallel_by {parallel_by}')
     pvalue = (np.sum(permutation_scores >= score, axis=0) + 1.0) / (n_permutations + 1)
-    return [(score[i], permutation_scores[:, i], pvalue[i]) for i in range(len(scorers))]
+    return [(score[i], permutation_scores[:, i], pvalue[i]) for i in range(len(score))]
     # return score, permutation_scores, pvalue
 
 
-def _permutation_test_score(estimator, X, y, groups, cv, scorers):
+def _permutation_test_score(estimator, X, y, groups=None, cv='warn',
+                            n_jobs=None, verbose=0, fit_params=None,
+                            pre_dispatch='2*n_jobs', method='predict',
+                            score_functions=None, non_cv_scorers=None):
     """Auxiliary function for permutation_test_score"""
-    avg_score = []
-    for train, test in cv.split(X, y, groups):
-        X_train, y_train = _safe_split(estimator, X, y, train)
-        X_test, y_test = _safe_split(estimator, X, y, test, train)
-        estimator.fit(X_train, y_train)
-        avg_score.append([scorer(estimator, X_test, y_test) for scorer in scorers])
-    return np.mean(avg_score, axis=0)
+    if score_functions is None:
+        score_functions = [r2_score]
+    y_pred = cross_val_predict(estimator, X, y, groups, cv, n_jobs, verbose, fit_params, pre_dispatch, method)
+    cv_scores = [score_function(y, y_pred) for score_function in score_functions]
+    estimator = estimator.fit(X, y)  # some of the score functions don't fit the model first
+    non_cv_scores = [scorer(estimator, X, y) for scorer in non_cv_scorers] if non_cv_scorers is not None else []
+    return np.array(cv_scores + non_cv_scores)
 
 
 def _shuffle(y, groups, random_state):

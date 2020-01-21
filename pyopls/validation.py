@@ -4,15 +4,43 @@ from sys import stderr
 import numpy as np
 from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, ClassifierMixin
-from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
-from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, cross_val_score
+from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve, r2_score
+from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, cross_val_predict
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.utils import check_array
 from sklearn.utils.multiclass import type_of_target
 from sklearn.utils.validation import check_is_fitted
 
 from .opls import OPLS
-from .permutation_test import permutation_test_score, feature_permutation_loading, non_cv_permutation_test_score
+from .permutation_test import permutation_test_score, feature_permutation_loading
+
+
+def discriminator_accuracy(y_true, y_pred):
+    try:
+        return accuracy_score(y_true.astype(int), y_pred.astype(int))
+    except ValueError as e:
+        warnings.warn(str(e), UserWarning)
+        return float('nan')
+
+
+def discriminator_roc_auc(y_true, y_pred):
+    try:
+        return roc_auc_score(y_true, np.clip(y_pred, -1, 1))
+    except ValueError as e:
+        warnings.warn(str(e), UserWarning)
+        return float('nan')
+
+
+def discriminator_r2_score(y_true, y_pred):
+    return r2_score(y_true, np.clip(y_pred, -1, 1))
+
+
+def neg_press(y_true, y_pred):
+    return -1 * np.sum(np.square(y_true - y_pred))
+
+
+def neg_pressd(y_true, y_pred):
+    return -1 * np.sum(np.square(y_true - np.clip(y_pred, -1, 1)))
 
 
 class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
@@ -151,20 +179,26 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         self.feature_significance_ = None
         self.feature_p_values_ = None
 
-        self.q_squared_ = None
-        self.permutation_q_squared_ = None
-        self.q_squared_p_value_ = None
         self.r_squared_Y_ = None
         self.permutation_r_squared_Y_ = None
         self.r_squared_Y_p_value_ = None
+
+        self.discriminant_r_squared_ = None
+        self.permutation_discriminant_r_squared_ = None
+        self.discriminant_r_squared_p_value_ = None
 
         self.r_squared_X_ = None
         self.permutation_r_squared_X_ = None
         self.r_squared_X_p_value_ = None
 
+        self.q_squared_ = None
+        self.permutation_q_squared_ = None
+        self.q_squared_p_value_ = None
+
         self.accuracy_ = None
         self.permutation_accuracy_ = None
         self.accuracy_p_value_ = None
+
         self.roc_auc_ = None
         self.permutation_roc_auc_ = None
         self.roc_auc_p_value_ = None
@@ -172,10 +206,6 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         self.discriminant_q_squared_ = None
         self.discriminant_q_squared_p_value_ = None
         self.permutation_discriminant_q_squared_ = None
-
-        self.discriminant_r_squared_ = None
-        self.discriminant_r_squared_p_value_ = None
-        self.permutation_discriminant_r_squared_ = None
 
         self.permutation_loadings_ = None
         self.estimator_ = None
@@ -195,14 +225,14 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
     def is_discrimination(self, Y):
         return type_of_target(Y).startswith('binary') and not self.force_regression
 
-    def _get_scoring(self, Y):
-        return self._neg_pressd if self.is_discrimination(Y) else self._neg_press
+    def _get_score_function(self, Y):
+        return neg_pressd if self.is_discrimination(Y) else neg_press
 
-    def _validate(self, X, Y, n_components, scoring, cv=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
+    def _validate(self, X, Y, n_components, score_function, cv=None, n_jobs=None, verbose=0, pre_dispatch='2*n_jobs'):
         cv = cv or self._get_validator(Y, self.k)
-        return np.sum(cross_val_score(OPLS(n_components, self.scale),
-                                      X, Y, scoring=scoring, cv=cv,
-                                      n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch))
+        y_pred = cross_val_predict(OPLS(n_components, self.scale), X, Y, cv=cv, n_jobs=n_jobs, verbose=verbose,
+                                   pre_dispatch=pre_dispatch)
+        return score_function(Y, y_pred)
 
     @staticmethod
     def _r2_Y(estimator: OPLS, X, y):
@@ -233,7 +263,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         y_pred = np.sign(est.predict(X))
         try:
             return accuracy_score(y.astype(int), y_pred.astype(int))
-        except ValueError:
+        except ValueError as e:
             warnings.warn(str(e), UserWarning)
             return float('nan')
 
@@ -320,10 +350,10 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
 
         """
         cv = cv or self._get_validator(y, self.k)
-        scoring = scoring or self._get_scoring(y)
+        scoring = scoring or self._get_score_function(y)
         n_components = self.min_n_components
 
-        score = self._validate(X, y, n_components, scoring)
+        score = self._validate(X, y, n_components, scoring, cv, n_jobs, verbose, pre_dispatch)
         while n_components < X.shape[1]:
             next_score = self._validate(X, y, n_components + 1, scoring, cv, n_jobs, verbose, pre_dispatch)
             if next_score <= score:
@@ -497,7 +527,8 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
 
         if not n_components:
             _log('Determining number of components to remove.')
-            n_components = self._determine_n_components(X, y)
+            n_components = self._determine_n_components(X, y, cv, n_jobs=n_jobs, verbose=verbose,
+                                                        pre_dispatch=pre_dispatch)
 
         self.n_components_ = n_components or self._determine_n_components(X, y)
 
@@ -511,47 +542,34 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         if self.is_discrimination(y):
             non_cv_scorers.append(self._q2d_Y)  # it's not technically Q-squared because we aren't cross-validating
 
-        cv_scorers = [self._q2_Y]
+        cv_score_functions = [r2_score]
         if self.is_discrimination(y):
-            cv_scorers += [self._q2d_Y, self._discriminator_accuracy, self._discriminator_roc_auc]
-
-        _log('Performing non-cross-validated metric permutations tests.')
-
-        non_cv_results = non_cv_permutation_test_score(OPLS(self.n_components_, self.scale), X, y,
-                                                       n_permutations=self.n_permutations, scorers=non_cv_scorers,
-                                                       n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)
-        if self.is_discrimination(y):
-            (
-                (self.r_squared_Y_, self.permutation_r_squared_Y_, self.r_squared_Y_p_value_),
-                (self.r_squared_X_, self.permutation_r_squared_X_, self.r_squared_X_p_value_),
-                (self.discriminant_r_squared_, self.permutation_discriminant_r_squared_,
-                 self.discriminant_r_squared_p_value_)
-            ) = non_cv_results
-        else:
-            (
-                (self.r_squared_Y_, self.permutation_r_squared_Y_, self.r_squared_Y_p_value_),
-                (self.r_squared_X_, self.permutation_r_squared_X_, self.r_squared_X_p_value_),
-            ) = non_cv_results
-
-        self.r_squared_X_p_value_ = 1.0 - self.r_squared_X_p_value_  # r_squared_X is "better" when it's smaller
+            cv_score_functions += [discriminator_r2_score, discriminator_accuracy, discriminator_roc_auc]
 
         _log('Performing cross-validated metric permutation tests.')
 
         cv_results = permutation_test_score(OPLS(self.n_components_, self.scale), X, y, cv=cv,
-                                            n_permutations=self.n_permutations, scorers=cv_scorers,
+                                            n_permutations=self.n_permutations, cv_score_functions=cv_score_functions,
+                                            non_cv_scorers=non_cv_scorers,
                                             n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)
         if self.is_discrimination(y):
-            (
+            [
                 (self.q_squared_, self.permutation_q_squared_, self.q_squared_p_value_),
                 (self.discriminant_q_squared_, self.permutation_discriminant_q_squared_,
                  self.discriminant_q_squared_p_value_),
                 (self.accuracy_, self.permutation_accuracy_, self.accuracy_p_value_),
-                (self.roc_auc_, self.permutation_roc_auc_, self.roc_auc_p_value_)
-            ) = cv_results
+                (self.roc_auc_, self.permutation_roc_auc_, self.roc_auc_p_value_),
+                (self.r_squared_Y_, self.permutation_r_squared_Y_, self.r_squared_Y_p_value_),
+                (self.r_squared_X_, self.permutation_r_squared_X_, self.r_squared_X_p_value_),
+                (self.discriminant_r_squared_, self.permutation_discriminant_r_squared_,
+                 self.discriminant_r_squared_p_value_)
+            ] = cv_results
         else:
-            (
-                (self.q_squared_, self.permutation_q_squared_, self.q_squared_p_value_)
-            ) = cv_results
+            [
+                (self.q_squared_, self.permutation_q_squared_, self.q_squared_p_value_),
+                (self.r_squared_Y_, self.permutation_r_squared_Y_, self.r_squared_Y_p_value_),
+                (self.r_squared_X_, self.permutation_r_squared_X_, self.r_squared_X_p_value_,)
+            ] = cv_results
 
         _log('Estimating feature significance.')
 
