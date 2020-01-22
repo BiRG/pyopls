@@ -1,12 +1,14 @@
+import warnings
 from sys import stderr
 
 import numpy as np
 from joblib import Parallel, delayed
 from sklearn.base import is_classifier, clone, ClassifierMixin
+from sklearn.exceptions import DataConversionWarning
 from sklearn.metrics import r2_score, accuracy_score
 from sklearn.metrics.scorer import _passthrough_scorer
 from sklearn.model_selection import check_cv, cross_val_predict
-from sklearn.utils import indexable, check_random_state, safe_indexing
+from sklearn.utils import indexable, check_random_state
 
 
 def non_cv_permutation_test_score(estimator, X, y, groups=None,
@@ -500,3 +502,48 @@ def _feature_shuffle(X, feature_ind, random_state):
 def _loading_p_value(permutation_loadings, upper, lower, n_permutations):
     return (np.sum(permutation_loadings >= upper) + np.sum(permutation_loadings <= lower) + 1) / (n_permutations + 1)
 
+
+def safe_indexing(X, indices):
+    """Return items or rows from X using indices.
+
+    Allows simple indexing of lists or arrays.
+    This is copied from the deprecated sklearn.utils.safe_indexing
+
+    Parameters
+    ----------
+    X : array-like, sparse-matrix, list, pandas.DataFrame, pandas.Series.
+        Data from which to sample rows or items.
+    indices : array-like of int
+        Indices according to which X will be subsampled.
+
+    Returns
+    -------
+    subset
+        Subset of X on first axis
+
+    Notes
+    -----
+    CSR, CSC, and LIL sparse matrices are supported. COO sparse matrices are
+    not supported.
+    """
+    if hasattr(X, "iloc"):
+        # Work-around for indexing with read-only indices in pandas
+        indices = indices if indices.flags.writeable else indices.copy()
+        # Pandas Dataframes and Series
+        try:
+            return X.iloc[indices]
+        except ValueError:
+            # Cython typed memoryviews internally used in pandas do not support
+            # readonly buffers.
+            warnings.warn("Copying input dataframe for slicing.",
+                          DataConversionWarning)
+            return X.copy().iloc[indices]
+    elif hasattr(X, "shape"):
+        if hasattr(X, 'take') and (hasattr(indices, 'dtype') and
+                                   indices.dtype.kind == 'i'):
+            # This is often substantially faster than X[indices]
+            return X.take(indices, axis=0)
+        else:
+            return X[indices]
+    else:
+        return [X[idx] for idx in indices]
