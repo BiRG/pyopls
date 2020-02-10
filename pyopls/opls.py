@@ -26,49 +26,21 @@ class OPLS(BaseEstimator, TransformerMixin):
 
     scale: boolean, scale data? (default True)
 
-    copy: boolean
-        copy X and Y to new matrices? (default True). Note that your inputs arrays will change if this is False.
+    center: boolean, center data? (default True)
 
     Attributes
     ----------
-    orthogonal_x_weights_ : array, [n_features, n_components]
-        X block weights vector
+    W_ortho_ : weights orthogonal to y
 
-    x_weights_ : array, [n_features, 1]
-        X block weights vector for first component of filtered data
+    P_ortho_ : loadings orthogonal to y
 
-    y_weights_ : float
-        Y block weight (is a scalar because singular Y is required)
+    T_ortho_ : scores orthogonal to y
 
-    orthogonal_x_loadings_ : array, [n_features, n_components]
-        X block loadings vectors
+    x_mean_ : mean of the X provided to fit()
+    y_mean_ : mean of the Y provided to fit()
+    x_std_ : std deviation of the X provided to fit()
+    y_std_ : std deviation of the Y provided to fit()
 
-    x_loadings_ : array, [n_features, 1]
-        X block loadings vector for first component of filtered data
-
-    orthogonal_x_scores_ : array, [n_samples, n_components]
-        X scores for orthogonal part of data.
-
-    x_scores_ : array, [n_samples, 1]
-        X scores for the first component of filtered data
-
-    y_scores_ : array, [n_samples, 1]
-        Y scores
-
-    coef_ : array, [n_features, 1]
-        The coefficients of the linear model created from the filtered data
-
-    r_squared_X_ : float
-        R^2 value for X. The amount of X variation in the X data explained by the model. This variation is independent
-        of the classes and likely to be noise. This should be smaller in an O-PLS model than in a typical PLS model.
-        The closer this value is to 0, the more orthogonal variation has been excluded.
-
-    r_squared_Y_ : float
-        R^2 value for Y. The amount of Y variation in the X data explained by the model. This is the value most commonly
-        called R-squared. To get the R^2Y value for another X-Y pair, use score().
-        This should be higher in an O-PLS model than in a typical PLS model. The closer this value is to 1, the more
-        variation in the target variable is captured.
-    
     References
     ----------
     Johan Trygg and Svante Wold. Orthogonal projections to latent structures (O-PLS).
@@ -88,8 +60,6 @@ class OPLS(BaseEstimator, TransformerMixin):
         self.x_std_ = None
         self.y_std_ = None
 
-        self.pls_ = PLSRegression(1, False)
-
     def _center_scale_xy(self, X, Y):
         """Center X, Y and scale if the scale parameter==True
 
@@ -97,7 +67,6 @@ class OPLS(BaseEstimator, TransformerMixin):
         -------
             X, Y, x_mean, y_mean, x_std, y_std
         """
-
         x_mean = X.mean(axis=0)
         y_mean = Y.mean(axis=0)
         if self.center:
@@ -132,9 +101,8 @@ class OPLS(BaseEstimator, TransformerMixin):
 
         # copy since this will contains the residuals (deflated) matrices
         check_consistent_length(X, Y)
-        X = check_array(X, dtype=np.float64, copy=self.copy,
-                        ensure_min_samples=2)
-        Y = check_array(Y, dtype=np.float64, copy=self.copy, ensure_2d=False)
+        X = check_array(X, dtype=np.float64, copy=True, ensure_min_samples=2)
+        Y = check_array(Y, dtype=np.float64, copy=True, ensure_2d=False)
         if Y.ndim == 1:
             Y = Y.reshape(-1, 1)
 
@@ -188,7 +156,7 @@ class OPLS(BaseEstimator, TransformerMixin):
         # filter out orthogonal components of X
         for i in range(self.n_components):
             t = np.dot(Z, self.W_ortho_[:, i]).reshape(-1, 1)
-            Z -= np.dot(t, self.P_ortho_[:, i].T)
+            Z -= np.dot(t, self.P_ortho_[:, i].T.reshape(1, -1))
 
         return Z
 
@@ -213,9 +181,21 @@ class OPLS(BaseEstimator, TransformerMixin):
         return self.fit(X, y).transform(X)
 
     def score(self, X):
-        # R2X, lower is better
+        """ Return the coefficient of determination R^2X of the transformation.
+        Parameters
+        ----------
+          X : array-like of shape (n_samples, n_features)
+              Test samples. For some estimators this may be a
+              precomputed kernel matrix or a list of generic objects instead,
+              shape = (n_samples, n_samples_fitted),
+              where n_samples_fitted is the number of
+              samples used in the fitting for the estimator.
+          Returns
+          -------
+          score : float
+              R^2 of self.transform(X) wrt. X. Lower is better. This is the amount of variance in X wrt. Y that is
+              explained by the transformed X. Higher is better.
+        """
+        X = check_array(X)
         Z = self.transform(X)
         return 1 - np.sum(np.square(Z)) / np.sum(np.square(X))
-
-
-class OPLSRegression()
