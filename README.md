@@ -36,7 +36,7 @@ A 1-component PLS regression is performed to evaluate the filtering.
 OPLS-processed data require only 1 PLS component. Performing a
 4-component OPLS improves accuracy from 95% to 100% and DQ^2 from 0.76
 to 0.84.
-```pythonstub
+```python
 import pandas as pd
 import numpy as np
 from pyopls import OPLS
@@ -79,7 +79,7 @@ This snippet will determine the best number of components to remove then
 plot the ROC curves of the classifiers on processed and unprocessed data
 and plot the PLS and OPLS scores for the samples.
 
-```pythonstub
+```python
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
