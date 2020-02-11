@@ -108,6 +108,7 @@ roc_auc = roc_auc_score(target, y_pred)
 proc_fpr, proc_tpr, proc_thresholds = roc_curve(target, processed_y_pred)
 proc_roc_auc = roc_auc_score(target, processed_y_pred)
 
+plt.figure(0)
 plt.plot(fpr, tpr, lw=2, color='blue', label=f'Unprocessed (AUC={roc_auc:.4f})')
 plt.plot(proc_fpr, proc_tpr, lw=2, color='red',
          label=f'{validator.n_components_}-component OPLS (AUC={proc_roc_auc:.4f})')
@@ -118,6 +119,7 @@ plt.title('ROC Curve')
 plt.legend(loc='lower right')
 plt.show()
 
+plt.figure(1)
 df['t'] = validator.pls_.x_scores_
 df['t_ortho'] = validator.opls_.T_ortho_[:, 0]
 pos_df = df[target==1]
