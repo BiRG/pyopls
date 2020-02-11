@@ -2,12 +2,11 @@ import warnings
 from sys import stderr
 
 import numpy as np
-from joblib import Parallel, delayed
 from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin, ClassifierMixin
+from sklearn.cross_decomposition import PLSRegression
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve, r2_score
 from sklearn.model_selection import KFold, StratifiedKFold, LeaveOneOut, cross_val_predict
 from sklearn.preprocessing import LabelBinarizer
-from sklearn.cross_decomposition import PLSRegression
 from sklearn.utils import check_array
 from sklearn.utils.multiclass import type_of_target
 from sklearn.utils.validation import check_is_fitted
@@ -71,20 +70,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
 
     r_squared_Y_: float, overall R-squared metric for the regression
 
-    permutation_r_squared_Y_: array [n_splits*n_permutations]
-        The R-squared metric for each permutation of the target
-
-    r_squared_Y_p_value_ : float
-        The p-value for the permutation test on R-squared
-
-
     r_squared_X_: float, overall R-squared X metric (
-
-    permutation_r_squared_X_: array [n_splits*n_permutations]
-        The R-squared X metric
-
-    r_squared_X_p_value_ : float
-        The p-value for the permutation test on R-squared X
 
     discriminant_q_squared_: float
         Discriminant Q-squared, if this is an OPLSDA problem. Discriminant Q-squared disregards the error of class
@@ -101,12 +87,6 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
     discriminant_r_squared_: float
         Discriminant R-squared, if this is an OPLSDA problem. Discriminant R-squared disregards the error of class
         predictions whose values are beyond the class labels (e.g. it treats a predictions of -1.5 as -1 and 1.5 as 1).
-
-    permutation_discriminant_r_squared_: array [n_splits*n_permutations]
-        The discriminant R-squared metric each permutation.
-
-    discriminant_r_squared_p_value_ : float
-        The p-value for the permutation test on DR-squared
 
     permutation_accuracy_: array [n_splits*n_permutations]
         The accuracy of the left-out data for each permutation
@@ -156,6 +136,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
     Discriminant Q-squared (DQ-squared) for improved discrimination in PLSDA models.
     Metabolomics (2008) 4: 293. https://doi.org/10.1007/s11306-008-0126-2
     """
+
     def __init__(self,
                  min_n_components=1,
                  k=10,
@@ -165,7 +146,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
                  n_inner_permutations=100,
                  n_outer_permutations=500,
                  inner_alpha=0.2,
-                 outer_alpha=0.01):
+                 outer_alpha=0.05):
         self.min_n_components = min_n_components
         self.k = k
         self.scale = scale
@@ -386,7 +367,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
         """
         Z = OPLS(n_components, self.scale).fit_transform(X, y)
         x_loadings, permutation_x_loadings, p_values = feature_permutation_loading(
-            PLSRegression(n_components, self.scale), Z, y, self.n_inner_permutations, self.inner_alpha,
+            PLSRegression(1, self.scale), Z, y, self.n_inner_permutations, self.inner_alpha,
             self.n_outer_permutations, random_state, n_jobs, verbose, pre_dispatch
         )
         return p_values < self.outer_alpha, p_values, permutation_x_loadings

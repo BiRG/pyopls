@@ -469,6 +469,7 @@ def feature_permutation_loading(estimator, X, y, initial_permutations=100, alpha
     else:
         _log('No significant features after first round of tests.')
     p_values = np.array(p_values)
+    p_values[p_values > 1] = 1  # if feature_min=feature_max=loading=0 values will be greater than 1
     return x_loadings, permutation_x_loadings, p_values
 
 
