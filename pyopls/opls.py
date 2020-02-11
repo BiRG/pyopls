@@ -3,9 +3,9 @@
 # License: MIT
 
 import numpy as np
-from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils import check_array
-from sklearn.utils.validation import check_is_fitted, FLOAT_DTYPES, check_consistent_length
+from sklearn.utils.validation import check_consistent_length
 
 
 def _center_scale_xy(X, Y, scale=True):
@@ -188,9 +188,9 @@ class OPLS(BaseEstimator, TransformerMixin):
           Returns
           -------
           score : float
-              R^2 of self.transform(X) wrt. X. Lower is better. This is the amount of variance in X wrt. Y that is
-              explained by the transformed X. Higher is better.
+              The amount of variation in X explained by the transformed X. A lower number indicates more orthogonal
+              variation has been removed.
         """
         X = check_array(X)
         Z = self.transform(X)
-        return 1 - np.sum(np.square(Z)) / np.sum(np.square(X))
+        return np.sum(np.square(Z)) / np.sum(np.square(X - self.x_mean_))  # Z is already properly centered

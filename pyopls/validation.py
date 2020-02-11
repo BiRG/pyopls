@@ -18,7 +18,7 @@ from .permutation_test import permutation_test_score, feature_permutation_loadin
 
 def discriminator_accuracy(y_true, y_pred):
     try:
-        return accuracy_score(y_true.astype(int), y_pred.astype(int))
+        return accuracy_score(y_true.astype(int), np.sign(y_pred).astype(int))
     except ValueError as e:
         warnings.warn(str(e), UserWarning)
         return float('nan')
@@ -476,7 +476,7 @@ class OPLSValidator(BaseEstimator, TransformerMixin, RegressorMixin):
             _log('Determining number of components to remove.')
             n_components = self._determine_n_components(X, y, cv, n_jobs=n_jobs, verbose=verbose,
                                                         pre_dispatch=pre_dispatch)
-
+            _log(f'Removing {n_components} orthogonal components.')
         self.n_components_ = n_components or self._determine_n_components(X, y)
 
         self.opls_ = OPLS(self.n_components_, self.scale).fit(X, y)
