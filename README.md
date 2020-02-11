@@ -16,7 +16,7 @@ A 1-component PLS regression is performed to evaluate the filtering.
 * The implementation provided here is equivalent to that of the 
   [libPLS MATLAB library](http://libpls.net/), which is a faithful
   recreation of Trygg and Wold's algorithm.
-  *   This package uses a different definition for R2X, however (see
+  *   This package uses a different definition for R<sup>2</sup>X, however (see
       below)
 * `OPLS` inherits `sklearn.base.TransformerMixin` (like
   `sklearn.decomposition.PCA`) but does not inherit 
@@ -26,7 +26,7 @@ A 1-component PLS regression is performed to evaluate the filtering.
 * Like `sklearn.cross_decomposition.PLSRegression`, `OPLS` will center
   both X and Y before performing the algorithm. This makes centering by
   class in PLS-DA models unnecessary.
-* The `score()` function of `OPLS` performs the R-squared X score, the
+* The `score()` function of `OPLS` performs the R<sup>2</sup>X score, the
   ratio of the variance in the transformed X to the variance in the
   original X. A lower score indicates more orthogonal variance removed.
 * `OPLS` only supports 1-column targets.
@@ -34,7 +34,7 @@ A 1-component PLS regression is performed to evaluate the filtering.
 ## Examples
 ### Perform OPLS and PLS-DA on wine dataset
 OPLS-processed data require only 1 PLS component. Performing a
-4-component OPLS improves accuracy from 95% to 100% and DQ^2 from 0.76
+4-component OPLS improves accuracy from 95% to 100% and DQ<sup>2</sup> from 0.76
 to 0.84.
 ```python
 import pandas as pd
