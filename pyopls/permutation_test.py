@@ -343,10 +343,10 @@ def feature_permutation_loading(estimator, X, y, initial_permutations=100, alpha
     """Determine the significance of each feature
 
     This is done by permuting each feature in X and measuring the loading.
-    The feature is considered significant if the loadings are signficantly different.
+    The feature is considered significant if the loadings are significantly different.
 
-    This is always done with a regular OPLS regressor
-    OPLS-DA should be binarized first.
+    This is always done with a regular PLS regressor
+    PLS-DA should be binarized first.
 
     Parameters
     ----------

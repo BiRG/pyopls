@@ -4,21 +4,41 @@
 
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin, RegressorMixin
-from sklearn.metrics import accuracy_score, r2_score
 from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted, FLOAT_DTYPES, check_consistent_length
-from sklearn.cross_decomposition import PLSRegression
+
+
+def _center_scale_xy(X, Y, scale=True):
+    """ Center X, Y and scale if the scale parameter==True
+
+    Returns
+    -------
+        X, Y, x_mean, y_mean, x_std, y_std
+    """
+    # center
+    x_mean = X.mean(axis=0)
+    X -= x_mean
+    y_mean = Y.mean(axis=0)
+    Y -= y_mean
+    # scale
+    if scale:
+        x_std = X.std(axis=0, ddof=1)
+        x_std[x_std == 0.0] = 1.0
+        X /= x_std
+        y_std = Y.std(axis=0, ddof=1)
+        y_std[y_std == 0.0] = 1.0
+        Y /= y_std
+    else:
+        x_std = np.ones(X.shape[1])
+        y_std = np.ones(Y.shape[1])
+    return X, Y, x_mean, y_mean, x_std, y_std
 
 
 class OPLS(BaseEstimator, TransformerMixin):
     """Orthogonal Projection to Latent Structures (O-PLS)
 
     This class implements the O-PLS algorithm for one (and only one) response as described by [Trygg 2002].
-    This is based on the MATLAB implementation by Paul E. Anderson (https://github.com/Anderson-Lab/OPLS).
-
-    The effectiveness of the
-    filtering can be observed from a plot of one column of orthogonal_x_scores_ vs x_scores_. Separation should be
-    observed along the horizontal axis but not the vertical axis.
+    This is equivalent to the implementation of the libPLS MATLAB library (http://libpls.net/)
 
     Parameters
     ----------
@@ -46,9 +66,8 @@ class OPLS(BaseEstimator, TransformerMixin):
     Johan Trygg and Svante Wold. Orthogonal projections to latent structures (O-PLS).
     J. Chemometrics 2002; 16: 119-128. DOI: 10.1002/cem.695
     """
-    def __init__(self, n_components=5, center=True, scale=True):
+    def __init__(self, n_components=5, scale=True):
         self.n_components = n_components
-        self.center = center
         self.scale = scale
 
         self.W_ortho_ = None
@@ -59,30 +78,6 @@ class OPLS(BaseEstimator, TransformerMixin):
         self.y_mean_ = None
         self.x_std_ = None
         self.y_std_ = None
-
-    def _center_scale_xy(self, X, Y):
-        """Center X, Y and scale if the scale parameter==True
-
-        Returns
-        -------
-            X, Y, x_mean, y_mean, x_std, y_std
-        """
-        x_mean = X.mean(axis=0)
-        y_mean = Y.mean(axis=0)
-        if self.center:
-            X -= x_mean
-            Y -= y_mean
-        if self.scale:
-            x_std = X.std(axis=0, ddof=1)
-            x_std[x_std == 0.0] = 1.0
-            X /= x_std
-            y_std = Y.std(axis=0, ddof=1)
-            y_std[y_std == 0] = 1.0
-            Y /= y_std
-        else:
-            x_std = np.ones(X.shape[1])
-            y_std = np.ones(Y.shape[1])
-        return X, Y, x_mean, y_mean, x_std, y_std
 
     def fit(self, X, Y):
         """Fit model to data
@@ -106,7 +101,7 @@ class OPLS(BaseEstimator, TransformerMixin):
         if Y.ndim == 1:
             Y = Y.reshape(-1, 1)
 
-        X, Y, self.x_mean_, self.y_mean_, self.x_std_, self.y_std_ = self._center_scale_xy(X, Y)
+        X, Y, self.x_mean_, self.y_mean_, self.x_std_, self.y_std_ = _center_scale_xy(X, Y, self.scale)
 
         Z = X.copy()
         w = np.dot(X.T, Y)  # calculate weight vector
