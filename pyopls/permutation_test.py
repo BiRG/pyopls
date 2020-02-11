@@ -140,7 +140,7 @@ def _non_cv_permutation_test_score(estimator, X, y, groups, scorers):
 
 def permutation_test_score(estimator, X, y, groups=None, cv='warn',
                            n_permutations=100, n_jobs=None, random_state=0,
-                           verbose=0, pre_dispatch='2*n_jobs', cv_score_functions=None, non_cv_scorers=None,
+                           verbose=0, pre_dispatch='2*n_jobs', cv_score_functions=None,
                            fit_params=None, method='predict', parallel_by='permutation'):
     """Evaluate the significance of several cross-validated scores with permutations
 
@@ -177,12 +177,6 @@ def permutation_test_score(estimator, X, y, groups=None, cv='warn',
         If you have special arguments for your score function you should create another function with
         the required prototype that wraps that function.
 
-    non_cv_scorers : list of callables or None, optional, default: None
-        a list of scorer functions of form scorer(est, y_true, y_pred). These scores will be calculated without
-        cross-validation.
-        If you have special arguments for your score function you should create another function with
-        the required prototype that wraps that function.
-
     cv : int, cross-validation generator or an iterable, optional
         Determines the cross-validation splitting strategy.
         Possible inputs for cv are:
@@ -213,7 +207,6 @@ def permutation_test_score(estimator, X, y, groups=None, cv='warn',
 
     verbose : integer, optional
         The verbosity level.
-
 
     pre_dispatch : int, or string, optional
         Controls the number of jobs that get dispatched during parallel
@@ -285,14 +278,13 @@ def permutation_test_score(estimator, X, y, groups=None, cv='warn',
     # independent, and that it is pickle-able.
     score = _permutation_test_score(clone(estimator), X, y, groups, cv,
                                     n_jobs, verbose, fit_params, pre_dispatch,
-                                    method, cv_score_functions, non_cv_scorers)
-
+                                    method, cv_score_functions)
     if parallel_by == 'estimation':
         permutation_scores = np.vstack([
             _permutation_test_score(
                 clone(estimator), X, _shuffle(y, groups, random_state),
                 groups, cv, n_jobs, verbose, fit_params, pre_dispatch,
-                method, cv_score_functions, non_cv_scorers
+                method, cv_score_functions
             ) for _ in range(n_permutations)
         ])
     elif parallel_by == 'permutation':
@@ -300,8 +292,7 @@ def permutation_test_score(estimator, X, y, groups=None, cv='warn',
             Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
                 delayed(_permutation_test_score)(
                     clone(estimator), X, _shuffle(y, groups, random_state),
-                    groups, cv, fit_params=fit_params, method=method, score_functions=cv_score_functions,
-                    non_cv_scorers=non_cv_scorers
+                    groups, cv, fit_params=fit_params, method=method, score_functions=cv_score_functions
                 ) for _ in range(n_permutations)
             )
         )
@@ -315,15 +306,13 @@ def permutation_test_score(estimator, X, y, groups=None, cv='warn',
 def _permutation_test_score(estimator, X, y, groups=None, cv='warn',
                             n_jobs=None, verbose=0, fit_params=None,
                             pre_dispatch='2*n_jobs', method='predict',
-                            score_functions=None, non_cv_scorers=None):
+                            score_functions=None):
     """Auxiliary function for permutation_test_score"""
     if score_functions is None:
         score_functions = [r2_score]
     y_pred = cross_val_predict(estimator, X, y, groups, cv, n_jobs, verbose, fit_params, pre_dispatch, method)
     cv_scores = [score_function(y, y_pred) for score_function in score_functions]
-    estimator = estimator.fit(X, y)  # some of the score functions don't fit the model first
-    non_cv_scores = [scorer(estimator, X, y) for scorer in non_cv_scorers] if non_cv_scorers is not None else []
-    return np.array(cv_scores + non_cv_scores)
+    return np.array(cv_scores)
 
 
 def _shuffle(y, groups, random_state):
@@ -343,10 +332,10 @@ def feature_permutation_loading(estimator, X, y, initial_permutations=100, alpha
     """Determine the significance of each feature
 
     This is done by permuting each feature in X and measuring the loading.
-    The feature is considered significant if the loadings are signficantly different.
+    The feature is considered significant if the loadings are significantly different.
 
-    This is always done with a regular OPLS regressor
-    OPLS-DA should be binarized first.
+    This is always done with a regular PLS regressor
+    PLS-DA should be binarized first.
 
     Parameters
     ----------
