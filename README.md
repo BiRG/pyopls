@@ -1,7 +1,7 @@
 # pyopls
 ##### Orthogonal Projection to Latent Structures in Python. 
 
-This package provides a scikit-learn-style regressor to perform OPLS.
+This package provides a scikit-learn-style transformer to perform OPLS.
 OPLS is a pre-processing method to remove variation from the descriptor 
 variables that are orthogonal to the target variable (1).
 
