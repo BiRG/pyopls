@@ -458,13 +458,16 @@ def feature_permutation_loading(estimator, X, y, initial_permutations=100, alpha
     retest_loadings = np.array(retest_loadings).reshape(len(retest_columns), final_permutations).T
 
     # replace p-values with the more accurate ones
-    _log(f'Calculating p values for {len(retest_columns)} features.')
-    p_values = np.array(p_values)
-    p_values[retest_columns] = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
-        delayed(_loading_p_value)(retest_loading, upper, lower, initial_permutations)
-        for retest_loading, upper, lower in zip(np.hsplit(retest_loadings, len(retest_columns)),
-                                                retest_loading_max, retest_loading_min)
-    )
+    if len(retest_columns):
+        _log(f'Calculating p values for {len(retest_columns)} features.')
+        p_values = np.array(p_values)
+        p_values[retest_columns] = Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)(
+            delayed(_loading_p_value)(retest_loading, upper, lower, initial_permutations)
+            for retest_loading, upper, lower in zip(np.hsplit(retest_loadings, len(retest_columns)),
+                                                    retest_loading_max, retest_loading_min)
+        )
+    else:
+        _log('No significant features after first round of tests.')
     p_values = np.array(p_values)
     return x_loadings, permutation_x_loadings, p_values
 
