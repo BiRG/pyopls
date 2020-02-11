@@ -6,7 +6,7 @@ OPLS is a pre-processing method to remove variation from the descriptor
 variables that are orthogonal to the target variable (1).
 
 This package also provides a class to validate OPLS models using a 
-1-component PLS regression with cross-validation and permutation tests
+1-component PLS regression with cross-validation and permutation tests (2)
 for both regression and classification metrics (from permutations of the
 target) and feature PLS loadings (from permutations of the features).
 
@@ -34,7 +34,7 @@ A 1-component PLS regression is performed to evaluate the filtering.
 ## Examples
 ### Perform OPLS and PLS-DA on wine dataset
 OPLS-processed data require only 1 PLS component. Performing a
-4-component OPLS improves accuracy from 95% to 100% and DQ<sup>2</sup> from 0.76
+4-component OPLS improves accuracy from 95% to 100% and DQ<sup>2</sup> (3) from 0.76
 to 0.84.
 ```python
 import pandas as pd
