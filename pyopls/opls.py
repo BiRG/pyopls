@@ -46,8 +46,6 @@ class OPLS(BaseEstimator, TransformerMixin):
 
     scale: boolean, scale data? (default True)
 
-    center: boolean, center data? (default True)
-
     Attributes
     ----------
     W_ortho_ : weights orthogonal to y
