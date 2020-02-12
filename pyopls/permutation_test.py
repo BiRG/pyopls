@@ -6,9 +6,13 @@ from joblib import Parallel, delayed
 from sklearn.base import is_classifier, clone, ClassifierMixin
 from sklearn.exceptions import DataConversionWarning
 from sklearn.metrics import r2_score, accuracy_score
-from sklearn.metrics.scorer import _passthrough_scorer
 from sklearn.model_selection import check_cv, cross_val_predict
 from sklearn.utils import indexable, check_random_state
+
+
+def passthrough_scorer(estimator, *args, **kwargs):
+    """Function that wraps estimator.score"""
+    return estimator.score(*args, **kwargs)
 
 
 def non_cv_permutation_test_score(estimator, X, y, groups=None,
@@ -112,7 +116,7 @@ def non_cv_permutation_test_score(estimator, X, y, groups=None,
     random_state = check_random_state(random_state)
     if scorers is None or not len(scorers):
         if hasattr(estimator, 'score'):
-            scorers = [_passthrough_scorer]
+            scorers = [passthrough_scorer]
         else:
             raise TypeError(
                 "If no scoring is specified, the estimator passed should "
