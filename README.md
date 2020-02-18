@@ -1,5 +1,4 @@
-# pyopls
-##### Orthogonal Projection to Latent Structures in Python. 
+# pyopls - Orthogonal Projection to Latent Structures in Python. 
 
 This package provides a scikit-learn-style transformer to perform OPLS.
 OPLS is a pre-processing method to remove variation from the descriptor 
@@ -10,7 +9,11 @@ This package also provides a class to validate OPLS models using a
 for both regression and classification metrics (from permutations of the
 target) and feature PLS loadings (from permutations of the features).
 
-A 1-component PLS regression is performed to evaluate the filtering.
+## Installation
+pyopls is available via [pypi](https://pypi.org/project/pyopls/):
+```shell
+pip install pyopls
+```
 
 ## Notes:
 * The implementation provided here is equivalent to that of the 
