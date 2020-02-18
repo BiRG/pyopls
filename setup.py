@@ -16,7 +16,7 @@ setuptools.setup(
     download_url='https://github.com/BiRG/pyopls/archive/20.02.tar.gz',
     packages=setuptools.find_packages(),
     python_requires='>=3.5',
-    instal_requires=[
+    install_requires=[
         'numpy>=1.11.0',
         'scipy>=0.18.0',
         'scikit-learn>=0.18.0'
