@@ -12,6 +12,8 @@ setuptools.setup(
     long_description=long_description,
     long_description_content_type='text/markdown',
     url='https://github.com/BiRG/pyopls',
+    keywords='metabolomics chemometrics partial-least-squares',
+    download_url='https://github.com/BiRG/pyopls/archive/20.02.tar.gz',
     packages=setuptools.find_packages(),
     python_requires='>=3.5',
     instal_requires=[
