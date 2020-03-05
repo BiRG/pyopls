@@ -6,8 +6,9 @@ def test_opls():
     from sklearn.model_selection import cross_val_predict, LeaveOneOut
     # relative to repo
     spectra = pd.read_csv('pyopls/tests/colorectal_cancer_nmr.csv', index_col=0)
-    target = spectra['target']
-    spectra = spectra.drop('target', axis=1)
+    spectra = spectra[spectra.classification.isin(['Colorectal Cancer', 'Healthy Control'])]
+    target = spectra.classification.apply(lambda x: 1 if x == 'Colorectal Cancer' else -1)
+    spectra = spectra.drop('classification', axis=1)
 
     score = -1
     n_components = 0
