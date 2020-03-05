@@ -55,7 +55,7 @@ from sklearn.model_selection import cross_val_predict, LeaveOneOut
 from sklearn.metrics import r2_score, accuracy_score
 
 
-spectra = pd.read_csv('pyopls/tests/colorectal_cancer_nmr.csv', index_col=0)
+spectra = pd.read_csv('colorectal_cancer_nmr.csv', index_col=0)
 spectra = spectra[spectra.classification.isin(['Colorectal Cancer', 'Healthy Control'])]
 target = spectra.classification.apply(lambda x: 1 if x == 'Colorectal Cancer' else -1)
 spectra = spectra.drop('classification', axis=1)
@@ -131,7 +131,6 @@ differentate class 1 from class 0.
 
 ```python
 import pandas as pd
-import numpy as np
 from pyopls import OPLSValidator
 from sklearn.datasets import load_wine
 
