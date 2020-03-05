@@ -10,13 +10,31 @@ This package also provides a class to validate OPLS models using a
 for both regression and classification metrics (from permutations of the
 target) and feature PLS loadings (from permutations of the features).
 
+## Table of Contents
+1. [Installation](#installation)
+2. [Notes](#notes)
+3. [Examples](#examples) 
+   1. [OPLS and PLS-DA](#opls-and-pls-da)
+   2. [Validation](#validation)
+4. [References](#references)
+5. [Data Acknowledgment](#data-acknowledgment)
+
+
 ## Installation
 pyopls is available via [pypi](https://pypi.org/project/pyopls/):
 ```shell
 pip install pyopls
 ```
+You may also install directly from this repository for the current
+master: 
+```shell
+pip install git+git://github.com/BiRG/pyopls.git
+```
+New versions are uploaded to pypi whenever the version number is
+incremented in `setup.py` on the master branch.
 
-## Notes:
+
+## Notes
 * The implementation provided here is equivalent to that of the 
   [libPLS MATLAB library](http://libpls.net/), which is a faithful
   recreation of Trygg and Wold's algorithm.
@@ -36,12 +54,14 @@ pip install pyopls
 * `OPLS` only supports 1-column targets.
 
 ## Examples
-### Perform OPLS and PLS-DA on colorectal cancer dataset
+### OPLS and PLS-DA
 A CSV file containing 1H-NMR spectra for 118 serum samples of patients
-with colon cancer diagnoses and healthy controls.
+with colon cancer diagnoses and healthy controls is located in
+`colorectal_cancer_nmr.csv` in the root of this repository (see
+acknowledgment below).
  
 OPLS-processed data require only 1 PLS component. Performing a
-52-component OPLS improves cross-validated accuracy from 70% to 100%,
+39-component OPLS improves cross-validated accuracy from 70% to 100%,
 AUC from .578 to 1 and DQ<sup>2</sup> (3) from 0.04 to 0.99.
 
 ```python
@@ -187,7 +207,6 @@ ID PR000227. The data can be accessed directly via it's Project DOI
 supported by NIH grant, U2C-DK119886. 
 
 *Note*: The test dataset consists only of those spectra belonging to
-samples labeled "Colorectal Cancer" or "Polyp". The "target" variable
-has the value -1 for samples labeled "Polyp" and value +1 for samples
-labeled "Colorectal Cancer".
-
+samples labeled "Colorectal Cancer" or "Healthy Control". The "target"
+variable has the value -1 for samples labeled "Healthy Control" and
+value +1 for samples labeled "Colorectal Cancer".
