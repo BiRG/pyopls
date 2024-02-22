@@ -8,7 +8,7 @@ from sklearn.utils import check_array
 from sklearn.utils.validation import check_consistent_length
 
 
-def _center_scale_xy(X, Y, scale=True):
+def _center_scale_xy(X, Y, scale=False, center = False):
     """ Center X, Y and scale if the scale parameter==True
 
     Returns
@@ -17,9 +17,12 @@ def _center_scale_xy(X, Y, scale=True):
     """
     # center
     x_mean = X.mean(axis=0)
-    X -= x_mean
     y_mean = Y.mean(axis=0)
-    Y -= y_mean
+
+    if center:
+        X -= x_mean
+        Y -= y_mean
+    
     # scale
     if scale:
         x_std = X.std(axis=0, ddof=1)
@@ -64,10 +67,10 @@ class OPLS(BaseEstimator, TransformerMixin):
     Johan Trygg and Svante Wold. Orthogonal projections to latent structures (O-PLS).
     J. Chemometrics 2002; 16: 119-128. DOI: 10.1002/cem.695
     """
-    def __init__(self, n_components=5, scale=True):
+    def __init__(self, n_components=5, scale=True, center = False):
         self.n_components = n_components
         self.scale = scale
-
+        self.center = center
         self.W_ortho_ = None
         self.P_ortho_ = None
         self.T_ortho_ = None
@@ -99,7 +102,7 @@ class OPLS(BaseEstimator, TransformerMixin):
         if Y.ndim == 1:
             Y = Y.reshape(-1, 1)
 
-        X, Y, self.x_mean_, self.y_mean_, self.x_std_, self.y_std_ = _center_scale_xy(X, Y, self.scale)
+        X, Y, self.x_mean_, self.y_mean_, self.x_std_, self.y_std_ =  _center_scale_xy(X, Y, self.scale, self.center )
 
         Z = X.copy()
         w = np.dot(X.T, Y)  # calculate weight vector
